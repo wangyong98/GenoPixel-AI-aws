@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GenoPixel Dataset Browser</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <p class="eyebrow">GenoPixel</p>
+        <div class="hero-copy">
+          <div>
+            <h1>Dataset browser for GenoPixel catalog</h1>
+            <p>
+              Search, facet, and inspect the GenoPixel catalog before analysis.
+            </p>
+          </div>
+        </div>
+      </header>
+
+      <div class="app-grid">
+        <aside class="filters-panel" id="filtersPanel">
+          <div class="panel-header">
+            <div>
+              <p class="panel-kicker">Filters</p>
+              <h2>Refine the catalog</h2>
+            </div>
+            <button class="ghost-button close-mobile" id="closeFiltersButton" type="button">Close</button>
+          </div>
+          <div id="facetSectionsTop" class="facet-sections"></div>
+          <section class="range-card">
+            <div class="range-header">
+              <h3>Year</h3>
+              <p>Inclusive range</p>
+            </div>
+            <div class="range-grid">
+              <label>
+                <span>From</span>
+                <input id="yearMin" type="number" inputmode="numeric" />
+              </label>
+              <label>
+                <span>To</span>
+                <input id="yearMax" type="number" inputmode="numeric" />
+              </label>
+            </div>
+          </section>
+          <div id="facetSectionsBottom" class="facet-sections"></div>
+        </aside>
+
+        <main class="results-panel">
+          <section class="toolbar">
+            <div class="search-shell">
+              <label class="search-label" for="searchInput">Search author, year, journal, or title</label>
+              <div class="search-row">
+                <input id="searchInput" type="search" placeholder="Start with a author name, year of publication, journal name or title" />
+                <button class="ghost-button mobile-only" id="openFiltersButton" type="button">Filters</button>
+              </div>
+            </div>
+            <div class="toolbar-controls">
+              <label class="sort-control">
+                <span>Sort</span>
+                <select id="sortSelect">
+                  <option value="smart">Smart sort</option>
+                  <option value="year_desc">Newest year</option>
+                  <option value="cells_desc">Most cells</option>
+                  <option value="title_asc">Title A-Z</option>
+                </select>
+              </label>
+              <button class="clear-button" id="clearAllButton" type="button">Clear all</button>
+            </div>
+          </section>
+
+          <section class="active-filters">
+            <div id="activeDatasetBanner" class="active-dataset-banner-shell" hidden></div>
+            <div id="resultSummary" class="result-summary"></div>
+            <div id="activeChips" class="chip-row"></div>
+          </section>
+
+          <section id="statusBanner" class="status-banner" hidden></section>
+          <section id="resultsContainer" class="results-container" aria-live="polite"></section>
+          <nav id="pagination" class="pagination"></nav>
+        </main>
+      </div>
+    </div>
+
+    <div class="detail-backdrop" id="detailBackdrop"></div>
+    <aside class="detail-drawer" id="detailDrawer" aria-live="polite">
+      <div class="detail-header">
+        <div>
+          <p class="panel-kicker">Dataset detail</p>
+          <h2 id="detailTitle">Select a dataset</h2>
+        </div>
+        <button class="ghost-button" id="closeDetailButton" type="button">Close</button>
+      </div>
+      <div id="detailBody" class="detail-body">
+        <p class="detail-placeholder">Choose a row to inspect the workbook metadata and any variant files.</p>
+      </div>
+    </aside>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

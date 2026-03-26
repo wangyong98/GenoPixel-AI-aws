@@ -1,0 +1,4 @@
+interface:
+  display_name: "Scanpy Single-Cell Analysis"
+  short_description: "Optional Scanpy interpretation guidance"
+  default_prompt: "Use $scanpy-single-cell-analysis as secondary Scanpy context for GenoPixels."
