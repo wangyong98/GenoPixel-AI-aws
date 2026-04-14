@@ -21,7 +21,7 @@ services:
       genopixel_tool_server:
         condition: service_healthy
     image: ghcr.io/open-webui/open-webui:main
-    pull_policy: if_not_present
+    pull_policy: always
     healthcheck:
       test: ["CMD", "curl", "-f", "${CHAT_HEALTH_SERV_BASEURL}"]
       interval: 30s
@@ -34,6 +34,7 @@ services:
     ports:
       - "3000:8080"
     environment:
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY}
       ENABLE_SIGNUP: "False"
       WEBUI_ADMIN_EMAIL: ${WEBUI_ADMIN_EMAIL}
       WEBUI_ADMIN_PASSWORD: ${WEBUI_ADMIN_PASS}
@@ -45,7 +46,7 @@ services:
       USER_PERMISSIONS_FEATURES_API_KEYS: "True"
       ADMIN_EMAIL: ${WEBUI_ADMIN_EMAIL}
       ENV: '"dev"'
-      ENABLE_PERSISTENT_CONFIG: "False"
+      ENABLE_PERSISTENT_CONFIG: "True"
       WEBUI_BANNERS: ${WEBUI_BANNERS}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       ENABLE_CODE_EXECUTION: "False"
@@ -121,6 +122,7 @@ services:
       - H5AD_BASE_DIR=${GENOPIXEL_H5AD_BASE_DIR}
       - OUTPUT_DIR=${GENOPIXEL_OUTPUT_DIR}
       - DEFAULT_BACKED=${GENOPIXEL_DEFAULT_BACKED}
+      - MPLBACKEND=Agg
     networks:
       - agentmendel-network
     ports:

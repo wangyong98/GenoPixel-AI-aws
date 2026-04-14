@@ -89,8 +89,10 @@ def _discover_skills() -> list[dict[str, Any]]:
 
 def _build_payload(model_name: str, filter_id: str) -> dict[str, Any]:
     filter_content = FILTER_FILE.read_text(encoding="utf-8")
+    all_skills = _discover_skills()
+    optional_ids = [s["id"] for s in all_skills if s["id"] not in CORE_SKILL_IDS]
     return {
-        "skills": _discover_skills(),
+        "skills": all_skills,
         "function": {
             "id": filter_id,
             "name": "GenoPixel Skill Injector",
@@ -108,7 +110,7 @@ def _build_payload(model_name: str, filter_id: str) -> dict[str, Any]:
                 "target_model_names": model_name,
                 "target_model_ids": "",
                 "required_skill_ids": ",".join(CORE_SKILL_IDS),
-                "optional_skill_ids": "",
+                "optional_skill_ids": ",".join(optional_ids),
                 "tool_server_name_match": "genopixel",
             },
             "is_active": True,
@@ -236,7 +238,7 @@ if model_row is not None:
     if model['filter_id'] not in filter_ids:
         filter_ids.append(model['filter_id'])
     meta['filterIds'] = filter_ids
-    meta.pop('skillIds', None)
+    meta['skillIds'] = [s['id'] for s in payload['skills']]
     params['system'] = ''
     cur.execute(
         'update model set meta = ?, params = ?, updated_at = ? where id = ?',
@@ -277,7 +279,7 @@ def _sync_via_docker(payload: dict[str, Any], service: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sync GenoPixel skills and runtime filter into Open WebUI.")
     parser.add_argument("--service", default="openwebui", help="Docker Compose service name for Open WebUI.")
-    parser.add_argument("--model-name", default="GenoPixels", help="Open WebUI model name to attach the filter to.")
+    parser.add_argument("--model-name", default="GenoPixel", help="Open WebUI model name to attach the filter to.")
     parser.add_argument("--filter-id", default="genopixel_skill_injector", help="Function id for the runtime injector filter.")
     args = parser.parse_args()
 

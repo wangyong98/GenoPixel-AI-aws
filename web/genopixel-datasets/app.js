@@ -541,7 +541,6 @@ function renderResults(filteredDatasets) {
           <h3>${escapeHtml(dataset.title || 'Untitled dataset')}</h3>
           <div class="badge-row">
             ${isRuntimeActive ? '<span class="badge runtime-active-badge">Active dataset</span>' : ''}
-            ${runtimeVariantRow === null ? '' : `<span class="badge runtime-active-badge">Sub-dataset row ${escapeHtml(runtimeVariantRow)}</span>`}
             <span class="badge">${escapeHtml(dataset.author || 'Unknown author')}</span>
             <span class="badge">${escapeHtml(dataset.journal || 'No journal')}</span>
           </div>
@@ -577,7 +576,6 @@ function renderResults(filteredDatasets) {
           <h3>${escapeHtml(dataset.title || 'Untitled dataset')}</h3>
           ${isRuntimeActive ? `<div class="badge-row">
             <span class="badge runtime-active-badge">Active dataset</span>
-            ${runtimeVariantRow === null ? '' : `<span class="badge runtime-active-badge">Sub-dataset row ${escapeHtml(runtimeVariantRow)}</span>`}
           </div>` : ''}
         </div>
         <div class="metric"><span>Author</span><strong>${escapeHtml(dataset.author || '—')}</strong></div>
@@ -758,15 +756,6 @@ function renderDetail() {
       ${runtimeActiveDetailBadge}
     </section>
 
-    <section class="detail-section">
-      <h3>Workbook references</h3>
-      <dl class="field-list">
-        ${detailFieldRow('All sheet row', detail.source_refs?.all?.excel_row || '—')}
-        ${detailFieldRow('Multiple sheet rows', (detail.source_refs?.multiple || []).map((row) => row.excel_row).join(', ') || '—')}
-        ${detailFieldRow('Publications', (detail.publications || []).join(', ') || '—')}
-      </dl>
-    </section>
-
     ${variantList.length ? `
       <section class="variant-table-wrap">
         <div class="subdataset-header">
@@ -779,7 +768,7 @@ function renderDetail() {
           </button>
         </div>
         ${detailActionStatus}
-        ${activeVariantMissing ? `<p class="active-dataset-warning detail-active-variant-warning">Active sub-dataset row ${escapeHtml(activeVariantRow)} was not found in the current detail payload.</p>` : ''}
+        ${activeVariantMissing ? `<p class="active-dataset-warning detail-active-variant-warning">The active sub-dataset was not found in the current detail payload.</p>` : ''}
         <div class="variant-header">
           <span>Select</span>
           <span>Description</span>

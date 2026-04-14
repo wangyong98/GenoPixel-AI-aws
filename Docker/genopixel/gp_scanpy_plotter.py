@@ -11,6 +11,7 @@ import matplotlib.ticker as mticker
 import pandas as pd
 import scanpy as sc
 import seaborn as sns
+import squidpy as sq
 from matplotlib import rc_context
 
 from gp_models import PlotRequest, PlotResult
@@ -30,6 +31,8 @@ ALLOWED_PLOTS = {
     "rank_genes_groups_heatmap",
     "correlation_matrix",
     "cell_counts_barplot",
+    "cell_type_proportion_barplot",
+    "spatial_scatter",
 }
 
 GENE_SYNONYM_MAP = {
@@ -211,12 +214,14 @@ class ScanpyPlotExecutor:
             self._plot_correlation_matrix(adata, request)
         elif requested_plot_type == "cell_counts_barplot":
             self._plot_cell_counts_barplot(adata, request)
+        elif requested_plot_type == "cell_type_proportion_barplot":
+            self._plot_cell_type_proportion_barplot(adata, request)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         out_file = self.output_dir / f"{actual_plot_type}_{timestamp}.png"
 
         fig = plt.gcf()
-        if actual_plot_type not in {"violin", "cell_counts_barplot"}:
+        if actual_plot_type not in {"violin", "cell_counts_barplot", "cell_type_proportion_barplot"}:
             fig.tight_layout()
         fig.savefig(out_file, dpi=150, bbox_inches="tight")
         plt.close("all")
@@ -327,6 +332,12 @@ class ScanpyPlotExecutor:
         if title:
             fig.axes[0].set_title(str(title))
 
+        # Remove legend — x-axis labels already identify each group.
+        for ax in fig.axes:
+            leg = ax.get_legend()
+            if leg is not None:
+                leg.remove()
+
         bottom_margin = min(0.08 + max_label_len * 0.008, 0.45)
         fig.subplots_adjust(bottom=bottom_margin)
 
@@ -377,9 +388,7 @@ class ScanpyPlotExecutor:
 
         use_gene_symbols = self._has_feature_name_column(adata)
         plot_genes = (
-            self._resolve_feature_name_genes(adata, var_names)
-            if use_gene_symbols
-            else self._resolve_gene_names(adata, var_names)
+            self._resolve_gene_names(adata, var_names)
         )
 
         resolved_groupby = self._resolve_cell_type_column(
@@ -410,14 +419,12 @@ class ScanpyPlotExecutor:
             "swap_axes": swap_axes,
             "figsize": figsize,
         }
-        if use_gene_symbols and not gene_symbols:
-            sc_kwargs["gene_symbols"] = "feature_name"
+        if use_gene_symbols:
             sc_kwargs["use_raw"] = False
         else:
             if gene_symbols:
                 sc_kwargs["gene_symbols"] = gene_symbols
-            if use_raw is not None:
-                sc_kwargs["use_raw"] = use_raw
+            sc_kwargs["use_raw"] = use_raw if use_raw is not None else False
         if layer:
             sc_kwargs["layer"] = layer
         if standard_scale:
@@ -432,6 +439,7 @@ class ScanpyPlotExecutor:
             sc_kwargs["vcenter"] = vcenter
 
         sc.pl.heatmap(adata, **sc_kwargs)
+        self._relabel_var_axes(self._build_full_label_map(adata))
 
         fig = plt.gcf()
 
@@ -521,9 +529,7 @@ class ScanpyPlotExecutor:
 
         use_gene_symbols = self._has_feature_name_column(adata)
         plot_genes = (
-            self._resolve_feature_name_genes(adata, var_names)
-            if use_gene_symbols
-            else self._resolve_gene_names(adata, var_names)
+            self._resolve_gene_names(adata, var_names)
         )
 
         resolved_groupby = self._resolve_cell_type_column(
@@ -549,14 +555,12 @@ class ScanpyPlotExecutor:
             "smallest_dot": smallest_dot,
             "figsize": figsize,
         }
-        if use_gene_symbols and not gene_symbols:
-            sc_kwargs["gene_symbols"] = "feature_name"
+        if use_gene_symbols:
             sc_kwargs["use_raw"] = False
         else:
             if gene_symbols:
                 sc_kwargs["gene_symbols"] = gene_symbols
-            if use_raw is not None:
-                sc_kwargs["use_raw"] = use_raw
+            sc_kwargs["use_raw"] = use_raw if use_raw is not None else False
         if layer:
             sc_kwargs["layer"] = layer
         if standard_scale:
@@ -579,6 +583,7 @@ class ScanpyPlotExecutor:
             sc_kwargs["size_title"] = size_title
 
         sc.pl.dotplot(adata, **sc_kwargs)
+        self._relabel_var_axes(self._build_full_label_map(adata))
 
         fig = plt.gcf()
 
@@ -645,9 +650,7 @@ class ScanpyPlotExecutor:
 
         use_gene_symbols = self._has_feature_name_column(adata)
         plot_genes = (
-            self._resolve_feature_name_genes(adata, var_names)
-            if use_gene_symbols
-            else self._resolve_gene_names(adata, var_names)
+            self._resolve_gene_names(adata, var_names)
         )
 
         resolved_groupby = self._resolve_cell_type_column(
@@ -675,18 +678,17 @@ class ScanpyPlotExecutor:
             "dendrogram": dendrogram,
             "figsize": figsize,
         }
-        if use_gene_symbols and not gene_symbols:
-            sc_kwargs["gene_symbols"] = "feature_name"
+        if use_gene_symbols:
             sc_kwargs["use_raw"] = False
         else:
             if gene_symbols:
                 sc_kwargs["gene_symbols"] = gene_symbols
-            if use_raw is not None:
-                sc_kwargs["use_raw"] = use_raw
+            sc_kwargs["use_raw"] = use_raw if use_raw is not None else False
         if layer:
             sc_kwargs["layer"] = layer
 
         sc.pl.tracksplot(adata, **sc_kwargs)
+        self._relabel_var_axes(self._build_full_label_map(adata))
 
         fig = plt.gcf()
 
@@ -766,9 +768,7 @@ class ScanpyPlotExecutor:
 
         use_gene_symbols = self._has_feature_name_column(adata)
         plot_genes = (
-            self._resolve_feature_name_genes(adata, var_names)
-            if use_gene_symbols
-            else self._resolve_gene_names(adata, var_names)
+            self._resolve_gene_names(adata, var_names)
         )
 
         resolved_groupby = self._resolve_cell_type_column(
@@ -807,14 +807,12 @@ class ScanpyPlotExecutor:
             "yticklabels": yticklabels,
             "figsize": figsize,
         }
-        if use_gene_symbols and not gene_symbols:
-            sc_kwargs["gene_symbols"] = "feature_name"
+        if use_gene_symbols:
             sc_kwargs["use_raw"] = False
         else:
             if gene_symbols:
                 sc_kwargs["gene_symbols"] = gene_symbols
-            if use_raw is not None:
-                sc_kwargs["use_raw"] = use_raw
+            sc_kwargs["use_raw"] = use_raw if use_raw is not None else False
         if layer:
             sc_kwargs["layer"] = layer
         if standard_scale:
@@ -835,6 +833,7 @@ class ScanpyPlotExecutor:
             sc_kwargs["title"] = title
 
         sc.pl.stacked_violin(adata, **sc_kwargs)
+        self._relabel_var_axes(self._build_full_label_map(adata))
 
         fig = plt.gcf()
 
@@ -924,9 +923,7 @@ class ScanpyPlotExecutor:
 
         use_gene_symbols = self._has_feature_name_column(adata)
         plot_genes = (
-            self._resolve_feature_name_genes(adata, var_names)
-            if use_gene_symbols
-            else self._resolve_gene_names(adata, var_names)
+            self._resolve_gene_names(adata, var_names)
         )
 
         resolved_groupby = self._resolve_cell_type_column(
@@ -961,14 +958,12 @@ class ScanpyPlotExecutor:
             "cmap": cmap,
             "figsize": figsize,
         }
-        if use_gene_symbols and not gene_symbols:
-            sc_kwargs["gene_symbols"] = "feature_name"
+        if use_gene_symbols:
             sc_kwargs["use_raw"] = False
         else:
             if gene_symbols:
                 sc_kwargs["gene_symbols"] = gene_symbols
-            if use_raw is not None:
-                sc_kwargs["use_raw"] = use_raw
+            sc_kwargs["use_raw"] = use_raw if use_raw is not None else False
         if layer:
             sc_kwargs["layer"] = layer
         if standard_scale:
@@ -985,6 +980,7 @@ class ScanpyPlotExecutor:
             sc_kwargs["colorbar_title"] = colorbar_title
 
         sc.pl.matrixplot(adata, **sc_kwargs)
+        self._relabel_var_axes(self._build_full_label_map(adata))
 
         fig = plt.gcf()
 
@@ -1052,9 +1048,7 @@ class ScanpyPlotExecutor:
         if var_names:
             use_gene_symbols = self._has_feature_name_column(adata)
             plot_genes = (
-                self._resolve_feature_name_genes(adata, var_names)
-                if use_gene_symbols
-                else self._resolve_gene_names(adata, var_names)
+                self._resolve_gene_names(adata, var_names)
             )
             # Intersect with actual var_names present in adata
             valid_genes = [g for g in plot_genes if g in adata.var_names]
@@ -1073,8 +1067,7 @@ class ScanpyPlotExecutor:
         }
         if obs_keys:
             sc_kwargs["obs_keys"] = obs_keys
-        if use_raw is not None:
-            sc_kwargs["use_raw"] = use_raw
+        sc_kwargs["use_raw"] = use_raw if use_raw is not None else False
         if standard_scale is not None:
             sc_kwargs["standard_scale"] = standard_scale
         if z_score is not None:
@@ -1258,8 +1251,7 @@ class ScanpyPlotExecutor:
         else:
             if gene_symbols:
                 sc_kwargs["gene_symbols"] = gene_symbols
-            if use_raw is not None:
-                sc_kwargs["use_raw"] = use_raw
+            sc_kwargs["use_raw"] = use_raw if use_raw is not None else False
         if layer:
             sc_kwargs["layer"] = layer
         if size is not None:
@@ -1340,27 +1332,18 @@ class ScanpyPlotExecutor:
         ncols: int = 4,
         title: str | None = None,
     ) -> PlotResult:
-        """Fully-parameterized UMAP plot — auto-computes embedding if missing."""
+        """Fully-parameterized UMAP plot — uses pre-computed embedding only, never computes on the fly."""
         plt.close("all")
 
-        # Ensure UMAP embedding exists
+        # Find a pre-computed UMAP or tSNE embedding — never compute one
         basis = self._find_first_matching_embedding_basis(adata, ["umap", "tsne"])
         if basis is None:
-            try:
-                self._ensure_embedding(adata, "umap")
-                basis = self._find_first_matching_embedding_basis(adata, ["umap", "tsne"])
-            except ValueError:
-                tsne_basis = self._find_embedding_basis(adata, "tsne")
-                if tsne_basis is not None:
-                    basis = tsne_basis
-                else:
-                    self._ensure_embedding(adata, "tsne")
-                    basis = self._find_embedding_basis(adata, "tsne")
-        if basis is None:
-            available = self._available_embeddings(adata)
+            obsm_keys = list(adata.obsm.keys())
+            keys_str = "\n".join(f"  - {k}" for k in obsm_keys) if obsm_keys else "  (none)"
             raise ValueError(
-                f"No UMAP or tSNE embedding found or could be computed. "
-                f"Available embeddings: {available or ['none']}."
+                f"No UMAP or tSNE embedding found in this dataset.\n\n"
+                f"Available embeddings in adata.obsm:\n{keys_str}\n\n"
+                f"Please choose one of the above keys to plot, or ask for a different plot type."
             )
 
         # Resolve color columns
@@ -1409,8 +1392,7 @@ class ScanpyPlotExecutor:
         else:
             if gene_symbols:
                 sc_kwargs["gene_symbols"] = gene_symbols
-            if use_raw is not None:
-                sc_kwargs["use_raw"] = use_raw
+            sc_kwargs["use_raw"] = use_raw if use_raw is not None else False
         if layer:
             sc_kwargs["layer"] = layer
         if size is not None:
@@ -1452,7 +1434,7 @@ class ScanpyPlotExecutor:
         fig.savefig(out_file, dpi=150, bbox_inches="tight")
         plt.close("all")
 
-        actual_plot_type = "umap" if is_umap_basis else "tsne"
+        actual_plot_type = "umap" if is_canonical_umap else "tsne"
         coloring_label = self._build_coloring_label(
             adata, resolved_color, self._resolve_cell_type_column(adata)
         )
@@ -1554,8 +1536,7 @@ class ScanpyPlotExecutor:
         else:
             if gene_symbols:
                 sc_kwargs["gene_symbols"] = gene_symbols
-            if use_raw is not None:
-                sc_kwargs["use_raw"] = use_raw
+            sc_kwargs["use_raw"] = use_raw if use_raw is not None else False
         if layer:
             sc_kwargs["layer"] = layer
         if size is not None:
@@ -1700,8 +1681,7 @@ class ScanpyPlotExecutor:
         else:
             if gene_symbols:
                 sc_kwargs["gene_symbols"] = gene_symbols
-            if use_raw is not None:
-                sc_kwargs["use_raw"] = use_raw
+            sc_kwargs["use_raw"] = use_raw if use_raw is not None else False
         if layer:
             sc_kwargs["layer"] = layer
         if size is not None:
@@ -1751,11 +1731,11 @@ class ScanpyPlotExecutor:
         adata: ad.AnnData,
         *,
         groups: list[str] | None = None,
-        n_genes: int = 20,
+        n_genes: int = 5,
         gene_symbols: str | None = None,
         key: str = "rank_genes_groups",
-        fontsize: int = 8,
-        ncols: int = 4,
+        fontsize: int = 13,
+        ncols: int = 3,
         sharey: bool = True,
         title: str | None = None,
     ) -> PlotResult:
@@ -1784,8 +1764,8 @@ class ScanpyPlotExecutor:
             group_names = []
         n_groups = len(groups) if groups else (len(group_names) if group_names else ncols)
         n_rows = max(1, math.ceil(n_groups / ncols))
-        fig_width = min(ncols * 3.5, 28.0)
-        fig_height = max(3.0, min(n_rows * (2.5 + n_genes * 0.12), 30.0))
+        fig_width = min(ncols * 4.5, 28.0)
+        fig_height = max(2.5, min(n_rows * (2.0 + n_genes * 0.12), 24.0))
 
         sc_kwargs: dict[str, object] = {
             "n_genes": n_genes,
@@ -1797,14 +1777,20 @@ class ScanpyPlotExecutor:
         }
         if groups:
             sc_kwargs["groups"] = groups
-        use_gene_symbols = self._has_feature_name_column(adata)
-        if use_gene_symbols and not gene_symbols:
-            sc_kwargs["gene_symbols"] = "feature_name"
-        elif gene_symbols:
+        sym_col = self._find_gene_symbol_column(adata)
+        if gene_symbols:
             sc_kwargs["gene_symbols"] = gene_symbols
+        elif sym_col:
+            sc_kwargs["gene_symbols"] = sym_col
 
-        with rc_context({"figure.figsize": (fig_width, fig_height)}):
+        with rc_context({
+            "figure.figsize": (fig_width, fig_height),
+            "axes.labelsize": 13,
+            "xtick.labelsize": 12,
+            "ytick.labelsize": 12,
+        }):
             sc.pl.rank_genes_groups(adata, **sc_kwargs)
+        self._relabel_var_axes(self._build_full_label_map(adata))
 
         fig = plt.gcf()
         if title:
@@ -1832,7 +1818,7 @@ class ScanpyPlotExecutor:
         adata: ad.AnnData,
         *,
         groups: list[str] | None = None,
-        n_genes: int = 20,
+        n_genes: int = 5,
         gene_names: list[str] | None = None,
         gene_symbols: str | None = None,
         use_raw: bool | None = None,
@@ -1885,16 +1871,16 @@ class ScanpyPlotExecutor:
             sc_kwargs["groups"] = groups
         if gene_names:
             sc_kwargs["gene_names"] = gene_names
-        use_gene_symbols = self._has_feature_name_column(adata)
-        if use_gene_symbols and not gene_symbols:
-            sc_kwargs["gene_symbols"] = "feature_name"
-        elif gene_symbols:
+        sym_col = self._find_gene_symbol_column(adata)
+        if gene_symbols:
             sc_kwargs["gene_symbols"] = gene_symbols
-        if use_raw is not None:
-            sc_kwargs["use_raw"] = use_raw
+        elif sym_col:
+            sc_kwargs["gene_symbols"] = sym_col
+        sc_kwargs["use_raw"] = use_raw if use_raw is not None else False
 
         with rc_context({"figure.figsize": (fig_width, fig_height)}):
             sc.pl.rank_genes_groups_violin(adata, **sc_kwargs)
+        self._relabel_var_axes(self._build_full_label_map(adata))
 
         fig = plt.gcf()
         for ax in fig.axes:
@@ -1965,7 +1951,7 @@ class ScanpyPlotExecutor:
         groupby_used = str(params.get("groupby", "")).strip() or None
         resolved_groupby = groupby or groupby_used
 
-        # Auto-size based on group count and n_genes
+        # Auto-size: x-axis has n_genes * n_groups columns (one gene block per group)
         if figsize is None:
             try:
                 all_group_names = list(rgg["names"].dtype.names or [])
@@ -1975,11 +1961,11 @@ class ScanpyPlotExecutor:
             n_g = len(display_groups) if display_groups else 8
             n_genes_display = abs(n_genes) if n_genes else 5
             if swap_axes:
-                width = max(8.0, min(n_g * 0.45 + 4, 28.0))
-                height = max(4.0, min(n_genes_display * 0.5 + 2, 28.0))
+                width = max(6.0, n_g * 0.5 + 2)
+                height = max(4.0, n_genes_display * n_g * 0.3 + 2)
             else:
-                width = max(8.0, min(n_genes_display * 0.5 + 4, 28.0))
-                height = max(4.0, min(n_g * 0.45 + 2, 28.0))
+                width = max(8.0, n_genes_display * n_g * 0.25 + 2)
+                height = max(4.0, n_g * 0.45 + 2)
             figsize = (width, height)
 
         sc_kwargs: dict[str, object] = {
@@ -2004,9 +1990,7 @@ class ScanpyPlotExecutor:
         if var_names:
             sc_kwargs["var_names"] = var_names
         use_gene_symbols = self._has_feature_name_column(adata)
-        if use_gene_symbols and not gene_symbols:
-            sc_kwargs["gene_symbols"] = "feature_name"
-        elif gene_symbols:
+        if gene_symbols:
             sc_kwargs["gene_symbols"] = gene_symbols
         if standard_scale:
             sc_kwargs["standard_scale"] = standard_scale
@@ -2024,6 +2008,7 @@ class ScanpyPlotExecutor:
             sc_kwargs["figsize"] = figsize
 
         sc.pl.rank_genes_groups_stacked_violin(adata, **sc_kwargs)
+        self._relabel_var_axes(self._build_full_label_map(adata))
 
         fig = plt.gcf()
         if swap_axes:
@@ -2087,7 +2072,7 @@ class ScanpyPlotExecutor:
         groupby_used = str(params.get("groupby", "")).strip() or None
         resolved_groupby = groupby or groupby_used
 
-        # Auto-size based on group count and n_genes
+        # Auto-size: heatmap — genes × groups rows (or cols when swapped)
         if figsize is None:
             try:
                 all_group_names = list(rgg["names"].dtype.names or [])
@@ -2095,13 +2080,15 @@ class ScanpyPlotExecutor:
                 all_group_names = []
             display_groups = groups if groups else all_group_names
             n_g = len(display_groups) if display_groups else 8
-            n_genes_display = abs(n_genes) if n_genes else 10
+            n_genes_display = abs(n_genes) if n_genes else 5
             if swap_axes:
-                width = max(8.0, min(n_g * 0.45 + 4, 28.0))
-                height = max(4.0, min(n_genes_display * 0.35 + 2, 28.0))
+                # genes on x-axis: total cols = n_genes * n_groups
+                width = max(8.0, n_genes_display * n_g * 0.25 + 2)
+                height = max(4.0, n_g * 0.45 + 2)
             else:
-                width = max(8.0, min(n_genes_display * 0.35 + 4, 28.0))
-                height = max(4.0, min(n_g * 0.45 + 2, 28.0))
+                # genes on y-axis, groups on x-axis
+                width = max(6.0, n_g * 0.5 + 2)
+                height = max(4.0, n_genes_display * n_g * 0.2 + 2)
             figsize = (width, height)
 
         sc_kwargs: dict[str, object] = {
@@ -2121,9 +2108,7 @@ class ScanpyPlotExecutor:
         if var_names:
             sc_kwargs["var_names"] = var_names
         use_gene_symbols = self._has_feature_name_column(adata)
-        if use_gene_symbols and not gene_symbols:
-            sc_kwargs["gene_symbols"] = "feature_name"
-        elif gene_symbols:
+        if gene_symbols:
             sc_kwargs["gene_symbols"] = gene_symbols
         if standard_scale:
             sc_kwargs["standard_scale"] = standard_scale
@@ -2142,6 +2127,7 @@ class ScanpyPlotExecutor:
 
         with rc_context({"figure.figsize": figsize}):
             sc.pl.rank_genes_groups_heatmap(adata, **sc_kwargs)
+        self._relabel_var_axes(self._build_full_label_map(adata))
 
         fig = plt.gcf()
         if not swap_axes:
@@ -2208,7 +2194,7 @@ class ScanpyPlotExecutor:
         groupby_used = str(params.get("groupby", "")).strip() or None
         resolved_groupby = groupby or groupby_used
 
-        # Auto-size based on group count and n_genes
+        # Auto-size: x-axis has n_genes * n_groups columns (one gene block per group)
         if figsize is None:
             try:
                 all_group_names = list(rgg["names"].dtype.names or [])
@@ -2218,11 +2204,11 @@ class ScanpyPlotExecutor:
             n_g = len(display_groups) if display_groups else 8
             n_genes_display = abs(n_genes) if n_genes else 5
             if swap_axes:
-                width = max(8.0, min(n_g * 0.5 + 4, 28.0))
-                height = max(4.0, min(n_genes_display * 0.4 + 2, 28.0))
+                width = max(6.0, n_g * 0.5 + 2)
+                height = max(4.0, n_genes_display * n_g * 0.3 + 2)
             else:
-                width = max(8.0, min(n_genes_display * 0.4 + 4, 28.0))
-                height = max(4.0, min(n_g * 0.5 + 2, 28.0))
+                width = max(8.0, n_genes_display * n_g * 0.25 + 2)
+                height = max(4.0, n_g * 0.5 + 2)
             figsize = (width, height)
 
         sc_kwargs: dict[str, object] = {
@@ -2243,9 +2229,7 @@ class ScanpyPlotExecutor:
         if var_names:
             sc_kwargs["var_names"] = var_names
         use_gene_symbols = self._has_feature_name_column(adata)
-        if use_gene_symbols and not gene_symbols:
-            sc_kwargs["gene_symbols"] = "feature_name"
-        elif gene_symbols:
+        if gene_symbols:
             sc_kwargs["gene_symbols"] = gene_symbols
         if values_to_plot:
             sc_kwargs["values_to_plot"] = values_to_plot
@@ -2268,6 +2252,7 @@ class ScanpyPlotExecutor:
 
         with rc_context({"figure.figsize": figsize}):
             sc.pl.rank_genes_groups_dotplot(adata, **sc_kwargs)
+        self._relabel_var_axes(self._build_full_label_map(adata))
 
         fig = plt.gcf()
         if title:
@@ -2330,7 +2315,7 @@ class ScanpyPlotExecutor:
         groupby_used = str(params.get("groupby", "")).strip() or None
         resolved_groupby = groupby or groupby_used
 
-        # Auto-size based on group count and n_genes
+        # Auto-size: x-axis has n_genes * n_groups columns (one gene block per group)
         if figsize is None:
             try:
                 all_group_names = list(rgg["names"].dtype.names or [])
@@ -2338,13 +2323,13 @@ class ScanpyPlotExecutor:
                 all_group_names = []
             display_groups = groups if groups else all_group_names
             n_g = len(display_groups) if display_groups else 8
-            n_genes_display = abs(n_genes) if n_genes else 3
+            n_genes_display = abs(n_genes) if n_genes else 5
             if swap_axes:
-                width = max(8.0, min(n_g * 0.5 + 4, 28.0))
-                height = max(4.0, min(n_genes_display * 0.4 + 2, 28.0))
+                width = max(6.0, n_g * 0.5 + 2)
+                height = max(4.0, n_genes_display * n_g * 0.3 + 2)
             else:
-                width = max(8.0, min(n_genes_display * 0.4 + 4, 28.0))
-                height = max(4.0, min(n_g * 0.5 + 2, 28.0))
+                width = max(8.0, n_genes_display * n_g * 0.25 + 2)
+                height = max(4.0, n_g * 0.5 + 2)
             figsize = (width, height)
 
         sc_kwargs: dict[str, object] = {
@@ -2365,9 +2350,7 @@ class ScanpyPlotExecutor:
         if var_names:
             sc_kwargs["var_names"] = var_names
         use_gene_symbols = self._has_feature_name_column(adata)
-        if use_gene_symbols and not gene_symbols:
-            sc_kwargs["gene_symbols"] = "feature_name"
-        elif gene_symbols:
+        if gene_symbols:
             sc_kwargs["gene_symbols"] = gene_symbols
         if values_to_plot:
             sc_kwargs["values_to_plot"] = values_to_plot
@@ -2388,6 +2371,7 @@ class ScanpyPlotExecutor:
 
         with rc_context({"figure.figsize": figsize}):
             sc.pl.rank_genes_groups_matrixplot(adata, **sc_kwargs)
+        self._relabel_var_axes(self._build_full_label_map(adata))
 
         fig = plt.gcf()
         if title:
@@ -2444,7 +2428,7 @@ class ScanpyPlotExecutor:
         groupby_used = str(params.get("groupby", "")).strip() or None
         resolved_groupby = groupby or groupby_used
 
-        # Auto-size: tracksplot stacks one track per group — height scales with groups
+        # Auto-size: tracksplot — x-axis has n_genes * n_groups columns, height scales with groups
         if figsize is None:
             try:
                 all_group_names = list(rgg["names"].dtype.names or [])
@@ -2452,9 +2436,9 @@ class ScanpyPlotExecutor:
                 all_group_names = []
             display_groups = groups if groups else all_group_names
             n_g = len(display_groups) if display_groups else 8
-            n_genes_display = abs(n_genes) if n_genes else 10
-            width = max(10.0, min(n_genes_display * 0.4 + 4, 28.0))
-            height = max(4.0, min(n_g * 0.8 + 2, 28.0))
+            n_genes_display = abs(n_genes) if n_genes else 5
+            width = max(10.0, n_genes_display * n_g * 0.25 + 2)
+            height = max(4.0, n_g * 0.8 + 2)
             figsize = (width, height)
 
         sc_kwargs: dict[str, object] = {
@@ -2472,13 +2456,12 @@ class ScanpyPlotExecutor:
             sc_kwargs["groupby"] = resolved_groupby
         if min_logfoldchange is not None:
             sc_kwargs["min_logfoldchange"] = min_logfoldchange
-        use_gene_symbols = self._has_feature_name_column(adata)
-        if use_gene_symbols and not gene_symbols:
-            sc_kwargs["gene_symbols"] = "feature_name"
-        elif gene_symbols:
+        sym_col = self._find_gene_symbol_column(adata)
+        if gene_symbols:
             sc_kwargs["gene_symbols"] = gene_symbols
-        if use_raw is not None:
-            sc_kwargs["use_raw"] = use_raw
+        elif sym_col:
+            sc_kwargs["gene_symbols"] = sym_col
+        sc_kwargs["use_raw"] = use_raw if use_raw is not None else False
         if layer:
             sc_kwargs["layer"] = layer
         if figsize:
@@ -2486,6 +2469,7 @@ class ScanpyPlotExecutor:
 
         with rc_context({"figure.figsize": figsize}):
             sc.pl.rank_genes_groups_tracksplot(adata, **sc_kwargs)
+        self._relabel_var_axes(self._build_full_label_map(adata))
 
         fig = plt.gcf()
         if title:
@@ -2571,6 +2555,413 @@ class ScanpyPlotExecutor:
             display_plot_type="Correlation matrix",
         )
 
+    def run_highest_expr_genes(
+        self,
+        adata: ad.AnnData,
+        *,
+        n_top: int = 30,
+        layer: str | None = None,
+        gene_symbols: str | None = None,
+        log: bool = False,
+        title: str | None = None,
+    ) -> PlotResult:
+        """Plot sc.pl.highest_expr_genes — top genes by mean fraction of counts per cell."""
+        plt.close("all")
+
+        # Auto-detect gene_symbols column if not supplied
+        if not gene_symbols:
+            gene_symbols = self._find_gene_symbol_column(adata)
+
+        # Height scales with n_top so all gene labels are readable
+        fig_height = max(5.0, n_top * 0.28 + 1.5)
+        fig_width = 8.0
+
+        sc_kwargs: dict[str, object] = {
+            "n_top": n_top,
+            "log": log,
+            "show": False,
+        }
+        if layer:
+            sc_kwargs["layer"] = layer
+        if gene_symbols:
+            sc_kwargs["gene_symbols"] = gene_symbols
+
+        with rc_context({"figure.figsize": (fig_width, fig_height)}):
+            sc.pl.highest_expr_genes(adata, **sc_kwargs)
+
+        fig = plt.gcf()
+        if title:
+            if fig.axes:
+                fig.axes[0].set_title(str(title))
+        fig.tight_layout()
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_file = self.output_dir / f"highest_expr_genes_{timestamp}.png"
+        fig.savefig(out_file, dpi=150, bbox_inches="tight")
+        plt.close("all")
+
+        return PlotResult(
+            plot_type="highest_expr_genes",
+            output_file=out_file,
+            display_plot_type="Highest expressed genes",
+        )
+
+    def run_scatter(
+        self,
+        adata: ad.AnnData,
+        *,
+        x: str | None = None,
+        y: str | None = None,
+        color: list[str] | None = None,
+        basis: str | None = None,
+        use_raw: bool | None = None,
+        layer: str | None = None,
+        groups: list[str] | None = None,
+        components: str | None = None,
+        sort_order: bool = True,
+        legend_loc: str = "right margin",
+        size: float | None = None,
+        color_map: str | None = None,
+        frameon: bool | None = None,
+        title: str | None = None,
+        figsize_width: float | None = None,
+        figsize_height: float | None = None,
+    ) -> PlotResult:
+        """Plot sc.pl.scatter — flexible scatter plot over obs columns or embeddings."""
+        plt.close("all")
+
+        n_panels = max(1, len(color)) if color else 1
+        fw = figsize_width if figsize_width else max(5.0, n_panels * 5.0)
+        fh = figsize_height if figsize_height else 4.0
+
+        sc_kwargs: dict[str, object] = {
+            "sort_order": sort_order,
+            "legend_loc": legend_loc,
+            "show": False,
+        }
+        if x:
+            sc_kwargs["x"] = x
+        if y:
+            sc_kwargs["y"] = y
+        if color:
+            sc_kwargs["color"] = color
+        if basis:
+            sc_kwargs["basis"] = basis
+        sc_kwargs["use_raw"] = use_raw if use_raw is not None else False
+        if layer:
+            sc_kwargs["layer"] = layer
+        if groups:
+            sc_kwargs["groups"] = groups
+        if components:
+            sc_kwargs["components"] = components
+        if size is not None:
+            sc_kwargs["size"] = size
+        if color_map:
+            sc_kwargs["color_map"] = color_map
+        if frameon is not None:
+            sc_kwargs["frameon"] = frameon
+        if title:
+            sc_kwargs["title"] = title
+
+        with rc_context({"figure.figsize": (fw, fh)}):
+            sc.pl.scatter(adata, **sc_kwargs)
+
+        fig = plt.gcf()
+        fig.tight_layout()
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_file = self.output_dir / f"scatter_{timestamp}.png"
+        fig.savefig(out_file, dpi=150, bbox_inches="tight")
+        plt.close("all")
+
+        return PlotResult(
+            plot_type="scatter",
+            output_file=out_file,
+            display_plot_type="Scatter plot",
+        )
+
+    def run_spatial_scatter(
+        self,
+        adata: ad.AnnData,
+        *,
+        color: list[str] | None = None,
+        figsize_width: float | None = None,
+        figsize_height: float | None = None,
+        title: str | None = None,
+        # Layout
+        wspace: float | None = None,
+        hspace: float | None = None,
+        ncols: int | None = None,
+        # Shape / size
+        shape: str | None = None,
+        size: float | None = None,
+        alpha: float | None = None,
+        # Color / style
+        cmap: str | None = None,
+        palette: str | None = None,
+        na_color: str | None = None,
+        # Image
+        img: bool | None = None,
+        img_alpha: float | None = None,
+        # Crop
+        crop_coord: tuple[int, int, int, int] | None = None,
+        # Legend / colorbar
+        legend_loc: str | None = None,
+        legend_fontsize: float | None = None,
+        colorbar: bool | None = None,
+        frameon: bool | None = None,
+        # Outline
+        outline: bool | None = None,
+        # Groups
+        groups: list[str] | None = None,
+        # Layer
+        layer: str | None = None,
+        use_raw: bool | None = None,
+    ) -> PlotResult:
+        """Spatial scatter plot using squidpy sq.pl.spatial_scatter."""
+        plt.close("all")
+
+        if "spatial" not in adata.uns or "spatial" not in adata.obsm:
+            raise ValueError(
+                "Dataset is not a spatial transcriptomics dataset. "
+                "Requires adata.uns['spatial'] and adata.obsm['spatial']."
+            )
+
+        # Remove is_single key if present (squidpy doesn't expect it)
+        if "is_single" in adata.uns["spatial"]:
+            adata.uns["spatial"].pop("is_single")
+
+        # Resolve color columns — default to cell type column
+        if not color:
+            resolved_ct = self._resolve_cell_type_column(adata)
+            color = [resolved_ct] if resolved_ct else []
+        else:
+            obs_lower = {str(c).lower(): str(c) for c in adata.obs.columns}
+            var_names_set = set(adata.var_names)
+            resolved_color = []
+            # Separate tokens into obs columns vs potential gene names
+            obs_tokens: list[str] = []
+            gene_tokens: list[str] = []
+            for c in color:
+                c_str = str(c).strip()
+                if c_str in adata.obs.columns:
+                    obs_tokens.append(c_str)
+                elif c_str.lower() in obs_lower:
+                    obs_tokens.append(obs_lower[c_str.lower()])
+                else:
+                    gene_tokens.append(c_str)
+            # Resolve gene tokens via the same ENS ID / gene symbol logic used by dotplot etc.
+            resolved_genes = self._resolve_gene_names(adata, gene_tokens) if gene_tokens else []
+            # Filter to genes actually present in var_names (resolved_genes may contain ENS IDs)
+            valid_genes = [g for g in resolved_genes if g in var_names_set]
+            # Any original token that produced no entry in valid_genes is truly unresolvable;
+            # pass it through so squidpy raises a meaningful error (don't re-add symbols that
+            # were already resolved to ENS IDs — that's what caused the original failure).
+            n_resolved = len(valid_genes)
+            n_expected = len(gene_tokens)
+            truly_unresolved: list[str] = []
+            if n_resolved < n_expected:
+                # Re-resolve one-by-one to find which original tokens had no match
+                for tok in gene_tokens:
+                    r = self._resolve_gene_names(adata, [tok])
+                    if not r or r[0] not in var_names_set:
+                        truly_unresolved.append(tok)
+            resolved_color = obs_tokens + valid_genes + truly_unresolved
+            color = resolved_color
+
+        # Figure size: scale width by number of panels
+        n_panels = max(1, len(color))
+        fw = figsize_width if figsize_width else max(10.0, n_panels * 8.0)
+        fh = figsize_height if figsize_height else 8.0
+        figsize = (fw, fh)
+
+        # Build per-panel titles: always one title per color panel (gene symbol or obs column name).
+        # A combined string title from the agent (e.g. "Spatial scatter by EPCAM and MUC1") is
+        # only used when there is exactly one panel — otherwise always use individual panel titles.
+        if color:
+            label_map = self._resolve_feature_labels_for_var_keys(adata, color)
+            panel_titles: list[str] = [label_map.get(c, c) for c in color]
+            if title and len(panel_titles) == 1:
+                panel_titles = [title]
+        else:
+            panel_titles = [title] if title else []
+
+        sq_kwargs: dict[str, object] = {
+            "color": color if color else None,
+            "figsize": figsize,
+        }
+        if panel_titles:
+            sq_kwargs["title"] = panel_titles
+        if wspace is not None:
+            sq_kwargs["wspace"] = wspace
+        if hspace is not None:
+            sq_kwargs["hspace"] = hspace
+        if ncols is not None:
+            sq_kwargs["ncols"] = ncols
+        if alpha is not None:
+            sq_kwargs["alpha"] = alpha
+        if cmap is not None:
+            sq_kwargs["cmap"] = cmap
+        if palette is not None:
+            sq_kwargs["palette"] = palette
+        if na_color is not None:
+            sq_kwargs["na_color"] = na_color
+        if img_alpha is not None:
+            sq_kwargs["img_alpha"] = img_alpha
+        if crop_coord is not None:
+            sq_kwargs["crop_coord"] = crop_coord
+        if legend_loc is not None:
+            sq_kwargs["legend_loc"] = legend_loc
+        if legend_fontsize is not None:
+            sq_kwargs["legend_fontsize"] = legend_fontsize
+        if colorbar is not None:
+            sq_kwargs["colorbar"] = colorbar
+        if frameon is not None:
+            sq_kwargs["frameon"] = frameon
+        if outline is not None:
+            sq_kwargs["outline"] = outline
+        if groups is not None:
+            sq_kwargs["groups"] = groups
+        if layer is not None:
+            sq_kwargs["layer"] = layer
+        if use_raw is not None:
+            sq_kwargs["use_raw"] = use_raw
+
+        # Determine if spatial uns has library entries (image + coordinates info)
+        has_spatial_info = len(adata.uns["spatial"]) > 0
+
+        if has_spatial_info:
+            if shape is not None:
+                sq_kwargs["shape"] = shape
+            if size is not None:
+                sq_kwargs["size"] = size
+            if img is not None:
+                sq_kwargs["img"] = img
+            sq.pl.spatial_scatter(adata, **sq_kwargs)
+        else:
+            sq_kwargs["shape"] = shape if shape is not None else None
+            sq_kwargs["size"] = size if size is not None else 3
+            sq_kwargs["img"] = img if img is not None else False
+            sq.pl.spatial_scatter(adata, **sq_kwargs)
+
+        fig = plt.gcf()
+
+        # Resize each colorbar axes to match the height of its paired image axes.
+        # Squidpy places colorbars as narrow axes that are shorter than the plot panel;
+        # detect them by their narrow width relative to height (width < 10% of height).
+        def _is_cbar(ax: plt.Axes) -> bool:
+            pos = ax.get_position()
+            return pos.width > 0 and (pos.width / max(pos.height, 1e-6)) < 0.15
+
+        all_axes = fig.get_axes()
+        image_axes = [ax for ax in all_axes if not _is_cbar(ax)]
+        colorbar_axes = [ax for ax in all_axes if _is_cbar(ax)]
+        for cax in colorbar_axes:
+            # Find the image axes closest horizontally to this colorbar
+            if image_axes:
+                paired = min(image_axes, key=lambda ax: abs(ax.get_position().x1 - cax.get_position().x0))
+                ipos = paired.get_position()
+                cpos = cax.get_position()
+                cax.set_position([cpos.x0, ipos.y0, cpos.width, ipos.height])
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_file = self.output_dir / f"spatial_scatter_{timestamp}.png"
+        fig.savefig(out_file, dpi=150, bbox_inches="tight")
+        plt.close("all")
+
+        return PlotResult(
+            plot_type="spatial_scatter",
+            output_file=out_file,
+            color_columns=color or None,
+            display_plot_type="Spatial scatter plot",
+        )
+
+    def run_nhood_enrichment(
+        self,
+        adata: ad.AnnData,
+        *,
+        cluster_key: str | None = None,
+        mode: str = "zscore",
+        figsize_width: float | None = None,
+        figsize_height: float | None = None,
+        title: str | None = None,
+    ) -> PlotResult:
+        """Neighborhood enrichment analysis and heatmap using squidpy."""
+        plt.close("all")
+
+        if "spatial" not in adata.uns or "spatial" not in adata.obsm:
+            raise ValueError(
+                "Dataset is not a spatial transcriptomics dataset. "
+                "Requires adata.uns['spatial'] and adata.obsm['spatial']."
+            )
+
+        # Remove is_single key if present
+        if "is_single" in adata.uns["spatial"]:
+            adata.uns["spatial"].pop("is_single")
+
+        # Resolve cluster_key — default to cell type column
+        resolved_cluster_key = self._resolve_cell_type_column(adata, cluster_key)
+        if not resolved_cluster_key:
+            raise ValueError(
+                "Could not resolve a cluster key. Pass an explicit adata.obs column via cluster_key."
+            )
+
+        # Figure size: nhood_enrichment is a square matrix; scale with category count
+        n_cats = int(adata.obs[resolved_cluster_key].nunique(dropna=True)) if resolved_cluster_key in adata.obs.columns else 1
+        fw = figsize_width if figsize_width else max(10.0, n_cats * 0.6 + 4.0)
+        fh = figsize_height if figsize_height else max(8.0, n_cats * 0.6 + 2.0)
+        figsize = (fw, fh)
+
+        # Fill NA values in the cluster column before spatial graph computation —
+        # squidpy does not handle NaN categories and will error or produce wrong results.
+        col = adata.obs[resolved_cluster_key]
+        if hasattr(col, "cat"):
+            if "Unknown" not in col.cat.categories:
+                adata.obs[resolved_cluster_key] = col.cat.add_categories("Unknown")
+                # Drop the pre-existing color palette — it has one fewer entry than the new
+                # category list, which causes matplotlib BoundaryNorm to raise
+                # "ncolors must equal or exceed the number of bins".
+                colors_key = f"{resolved_cluster_key}_colors"
+                adata.uns.pop(colors_key, None)
+            adata.obs[resolved_cluster_key] = adata.obs[resolved_cluster_key].fillna("Unknown")
+        else:
+            adata.obs[resolved_cluster_key] = col.fillna("Unknown")
+
+        # Compute spatial graph and neighborhood enrichment
+        sq.gr.spatial_neighbors(adata)
+        sq.gr.nhood_enrichment(adata, cluster_key=resolved_cluster_key)
+
+        # Use a diverging colormap with enough discrete levels to cover all category pairs.
+        # The heatmap has n_cats rows/cols; matplotlib BoundaryNorm needs ncolors >= n_bins.
+        import matplotlib.colors as mcolors
+        n_levels = max(n_cats + 2, 256)
+        enrichment_cmap = plt.get_cmap("RdBu_r", n_levels)
+
+        sq_kwargs: dict[str, object] = {
+            "cluster_key": resolved_cluster_key,
+            "mode": mode,
+            "figsize": figsize,
+            "show": False,
+            "cmap": enrichment_cmap,
+        }
+        if title:
+            sq_kwargs["title"] = title
+
+        sq.pl.nhood_enrichment(adata, **sq_kwargs)
+
+        fig = plt.gcf()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_file = self.output_dir / f"nhood_enrichment_{timestamp}.png"
+        fig.savefig(out_file, dpi=150, bbox_inches="tight")
+        plt.close("all")
+
+        return PlotResult(
+            plot_type="nhood_enrichment",
+            output_file=out_file,
+            resolved_groupby=resolved_cluster_key,
+            display_plot_type="Neighborhood enrichment",
+        )
+
     def _derive_plot_metadata(
         self,
         *,
@@ -2611,6 +3002,8 @@ class ScanpyPlotExecutor:
             resolved_groupby = self._resolve_cell_type_column(adata, request.groupby)
         elif actual_plot_type == "cell_counts_barplot":
             resolved_groupby = self._resolve_cell_type_column(adata, request.groupby)
+        elif actual_plot_type == "cell_type_proportion_barplot":
+            resolved_groupby = self._resolve_cell_type_column(adata, request.groupby)
 
         return {
             "color_columns": resolved_color_columns,
@@ -2636,6 +3029,7 @@ class ScanpyPlotExecutor:
             "rank_genes_groups_heatmap": "Rank-genes heatmap",
             "correlation_matrix": "Correlation matrix",
             "cell_counts_barplot": "Cell counts bar plot",
+            "cell_type_proportion_barplot": "Cell type proportion bar plot",
             "tracksplot": "Tracks plot",
             "stacked_violin": "Stacked violin plot",
             "clustermap": "Cluster map",
@@ -2652,8 +3046,6 @@ class ScanpyPlotExecutor:
             genes = list(self._session_markers)
         if not genes:
             return None
-        if self._has_feature_name_column(adata):
-            return self._resolve_feature_name_genes(adata, genes)
         return self._resolve_gene_names(adata, genes)
 
     def _resolve_distribution_groupby(self, adata: ad.AnnData, request: PlotRequest) -> str | None:
@@ -2667,7 +3059,7 @@ class ScanpyPlotExecutor:
     ) -> list[str] | None:
         requested_genes = [str(gene).strip() for gene in request.genes if str(gene).strip()]
         if requested_genes:
-            return self._resolve_feature_name_genes(adata, requested_genes)
+            return self._resolve_gene_names(adata, requested_genes)
 
         gene_like = [
             token
@@ -3087,9 +3479,26 @@ class ScanpyPlotExecutor:
             self._session_cell_type_column = inferred
         return inferred
 
+    _GENE_SYMBOL_COLUMNS = (
+        "feature_name",
+        "gene_name",
+        "gene_names",
+        "gene_symbols",
+        "symbol",
+        "hgnc_symbol",
+    )
+
+    @staticmethod
+    def _find_gene_symbol_column(adata: ad.AnnData) -> str | None:
+        """Return the first var column that stores gene symbols, or None."""
+        for col in ScanpyPlotExecutor._GENE_SYMBOL_COLUMNS:
+            if col in adata.var.columns:
+                return col
+        return None
+
     @staticmethod
     def _has_feature_name_column(adata: ad.AnnData) -> bool:
-        return "feature_name" in adata.var.columns
+        return ScanpyPlotExecutor._find_gene_symbol_column(adata) is not None
 
     @staticmethod
     def _gene_to_ens(df: pd.DataFrame, genes: list[str], column: str = "feature_name") -> list[str]:
@@ -3123,10 +3532,11 @@ class ScanpyPlotExecutor:
         canonical_genes = self._canonicalize_gene_tokens(genes)
         if not canonical_genes:
             return []
-        if not self._has_feature_name_column(adata):
+        gene_sym_col = self._find_gene_symbol_column(adata)
+        if not gene_sym_col:
             return canonical_genes
 
-        feature_series = adata.var["feature_name"].astype(str)
+        feature_series = adata.var[gene_sym_col].astype(str)
         var_names = [str(name) for name in adata.var_names]
 
         feature_lookup: dict[str, str] = {}
@@ -3168,7 +3578,7 @@ class ScanpyPlotExecutor:
 
         resolved: list[str] = []
         seen: set[str] = set()
-        resolved_gene_ids = self._gene_to_ens(adata.var, canonical_genes, column="feature_name")
+        resolved_gene_ids = self._gene_to_ens(adata.var, canonical_genes, column=self._find_gene_symbol_column(adata) or "feature_name")
         for gene_id in resolved_gene_ids:
             if gene_id not in seen:
                 resolved.append(gene_id)
@@ -3187,7 +3597,8 @@ class ScanpyPlotExecutor:
         return resolved
 
     def _resolve_feature_labels_for_var_keys(self, adata: ad.AnnData, var_keys: list[str]) -> dict[str, str]:
-        if not var_keys or not self._has_feature_name_column(adata):
+        gene_sym_col = self._find_gene_symbol_column(adata)
+        if not var_keys or not gene_sym_col:
             return {}
 
         label_map: dict[str, str] = {}
@@ -3201,10 +3612,40 @@ class ScanpyPlotExecutor:
                 continue
             if token not in var_df.index:
                 continue
-            feature_name = str(var_df.at[token, "feature_name"]).strip()
+            feature_name = str(var_df.at[token, gene_sym_col]).strip()
             if feature_name and feature_name.lower() != "nan":
                 label_map[token] = feature_name
         return label_map
+
+    @staticmethod
+    @staticmethod
+    def _build_full_label_map(adata: ad.AnnData) -> dict[str, str]:
+        """Return a var_name → symbol map for all genes (used for post-hoc axis relabeling)."""
+        gene_sym_col = ScanpyPlotExecutor._find_gene_symbol_column(adata)
+        if not gene_sym_col:
+            return {}
+        result: dict[str, str] = {}
+        for var_name, symbol in zip(adata.var_names, adata.var[gene_sym_col].astype(str)):
+            sym = symbol.strip()
+            if sym and sym.lower() != "nan":
+                result[str(var_name)] = sym
+        return result
+
+    @staticmethod
+    def _relabel_var_axes(label_map: dict[str, str]) -> None:
+        """Rename Ensembl-ID tick labels to gene symbols on all axes of the current figure."""
+        if not label_map:
+            return
+        fig = plt.gcf()
+        for ax in fig.axes:
+            x_labels = [t.get_text() for t in ax.get_xticklabels()]
+            new_x = [label_map.get(t, t) for t in x_labels]
+            if x_labels and x_labels != new_x:
+                ax.set_xticklabels(new_x)
+            y_labels = [t.get_text() for t in ax.get_yticklabels()]
+            new_y = [label_map.get(t, t) for t in y_labels]
+            if y_labels and y_labels != new_y:
+                ax.set_yticklabels(new_y)
 
     @staticmethod
     def _relabel_violin_axes(label_map: dict[str, str]) -> None:
@@ -3231,12 +3672,12 @@ class ScanpyPlotExecutor:
 
         obs_columns = {str(column) for column in adata.obs.columns}
         requested_symbol_column = (preferred_gene_symbols_column or "").strip()
-        has_feature_name = self._has_feature_name_column(adata)
+        detected_sym_col = self._find_gene_symbol_column(adata)
         symbol_columns: list[str] = []
         if requested_symbol_column and requested_symbol_column in adata.var.columns:
             symbol_columns.append(requested_symbol_column)
-        if has_feature_name and "feature_name" not in symbol_columns:
-            symbol_columns.append("feature_name")
+        if detected_sym_col and detected_sym_col not in symbol_columns:
+            symbol_columns.append(detected_sym_col)
 
         available_var_names = {str(name).lower() for name in adata.var_names}
         available_symbol_names_by_column: dict[str, set[str]] = {}
@@ -3257,7 +3698,7 @@ class ScanpyPlotExecutor:
 
         replacement_map: dict[str, str] = {}
         if gene_like_tokens:
-            if requested_symbol_column and requested_symbol_column in adata.var.columns and requested_symbol_column != "feature_name":
+            if requested_symbol_column and requested_symbol_column in adata.var.columns and requested_symbol_column != detected_sym_col:
                 resolved_gene_like_tokens = self._canonicalize_gene_tokens(gene_like_tokens)
             else:
                 resolved_gene_like_tokens = self._resolve_gene_names(adata, gene_like_tokens)
@@ -3476,7 +3917,135 @@ class ScanpyPlotExecutor:
         plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=xlabel_fontsize)
         ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{int(x):,}"))
 
+        # Count labels on top of each bar
+        count_fontsize = max(5, min(xlabel_fontsize, 9))
+        for patch, count in zip(ax.patches, cell_counts["count"]):
+            ax.text(
+                patch.get_x() + patch.get_width() / 2,
+                patch.get_height(),
+                f"{int(count):,}",
+                ha="center",
+                va="bottom",
+                fontsize=count_fontsize,
+                clip_on=False,
+            )
+
         # Bottom margin proportional to label length so rotated labels aren't clipped
+        bottom_margin = min(0.12 + max_label_len * 0.009, 0.45)
+        fig.subplots_adjust(bottom=bottom_margin)
+
+    def _resolve_sample_column(self, adata: ad.AnnData, explicit_column: str | None = None) -> str | None:
+        """Find a sample/donor ID column in adata.obs.
+
+        Priority:
+        1. Explicit column name (exact then case-insensitive match).
+        2. Columns whose lowercased name matches a known sample-ID keyword pattern.
+        3. Any column whose name contains 'sample'.
+        Returns None if nothing suitable is found.
+        """
+        obs_cols = list(adata.obs.columns)
+        lower_to_col = {str(c).lower(): str(c) for c in obs_cols}
+
+        # 1. Explicit column provided by user
+        if explicit_column and explicit_column.strip():
+            explicit = explicit_column.strip()
+            if explicit in obs_cols:
+                return explicit
+            matched = lower_to_col.get(explicit.lower())
+            if matched:
+                return matched
+
+        # 2. Known sample-ID keyword patterns (ordered by priority)
+        _SAMPLE_KEYWORDS = [
+            "sample_id",
+            "sampleid",
+            "sample",
+            "sample_name",
+            "donor_id",
+            "donor",
+            "patient_id",
+            "patient",
+            "subject_id",
+            "subject",
+            "batch",
+        ]
+        for keyword in _SAMPLE_KEYWORDS:
+            matched = lower_to_col.get(keyword)
+            if matched:
+                return matched
+
+        # 3. Fallback: any column whose name contains 'sample'
+        for lower_name, original in lower_to_col.items():
+            if "sample" in lower_name:
+                return original
+
+        return None
+
+    def _plot_cell_type_proportion_barplot(self, adata: ad.AnnData, request: PlotRequest) -> None:
+        """Stacked bar plot: percentage of each cell type per sample."""
+        # Resolve cell type column (default: author_cell_type, user-customisable via groupby)
+        cell_type_col = self._resolve_cell_type_column(adata, request.groupby)
+        if not cell_type_col or cell_type_col not in adata.obs.columns:
+            raise ValueError(
+                f"Cell type column '{cell_type_col}' not found in adata.obs. "
+                f"Available columns: {', '.join(str(c) for c in adata.obs.columns[:20])}"
+            )
+
+        # Resolve sample column – try color list first, then auto-detect
+        sample_col_hint = request.color[0] if request.color else None
+        sample_col = self._resolve_sample_column(adata, sample_col_hint)
+        if not sample_col or sample_col not in adata.obs.columns:
+            raise ValueError(
+                "Could not find a sample/donor ID column in adata.obs. "
+                "Please specify the column name explicitly. "
+                f"Available columns: {', '.join(str(c) for c in adata.obs.columns[:20])}"
+            )
+
+        # Build percentage cross-tab: rows = cell types, columns = samples
+        cross_tab = pd.crosstab(
+            adata.obs[cell_type_col],
+            adata.obs[sample_col],
+            normalize="columns",
+        ) * 100.0
+
+        n_samples = cross_tab.shape[1]
+        n_cell_types = cross_tab.shape[0]
+
+        fig_width = max(8.0, min(n_samples * 0.8 + 3.0, 36.0))
+        fig_height = 6.0
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+
+        cross_tab.T.plot(kind="bar", stacked=True, ax=ax, width=0.8)
+
+        # Legend outside the plot area; adjust right margin to make room
+        legend_cols = max(1, n_cell_types // 25 + 1)
+        ax.legend(
+            title=cell_type_col.replace("_", " ").title(),
+            bbox_to_anchor=(1.02, 1.0),
+            loc="upper left",
+            ncol=legend_cols,
+            fontsize=7,
+            title_fontsize=8,
+        )
+
+        title = str(request.title or "").strip() or (
+            f"Cell Type Proportions per {sample_col.replace('_', ' ').title()}"
+        )
+        ax.set_title(title)
+        ax.set_xlabel(sample_col.replace("_", " ").title())
+        ax.set_ylabel("Percentage (%)")
+
+        max_label_len = int(
+            pd.Series(cross_tab.columns.astype(str)).str.len().max()
+        ) if n_samples else 0
+        if n_samples > 40 or max_label_len > 20:
+            xlabel_fontsize = 6
+        elif n_samples > 20 or max_label_len > 12:
+            xlabel_fontsize = 8
+        else:
+            xlabel_fontsize = 10
+        plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=xlabel_fontsize)
+
         bottom_margin = min(0.12 + max_label_len * 0.009, 0.45)
         fig.subplots_adjust(bottom=bottom_margin)
 
@@ -3607,62 +4176,92 @@ class ScanpyPlotExecutor:
         self._rank_genes_groups_used_groupby = requested_groupby
         return requested_groupby
 
+    @staticmethod
+    def _rgg_figsize(rgg: dict, n_genes: int, swap_axes: bool = False) -> tuple[float, float]:
+        """Compute figure size for rank_genes_groups plots where total x-axis cols = n_genes × n_groups."""
+        try:
+            all_group_names = list(rgg["names"].dtype.names or [])
+        except Exception:
+            all_group_names = []
+        n_g = len(all_group_names) if all_group_names else 8
+        if swap_axes:
+            return (max(6.0, n_g * 0.5 + 2), max(4.0, n_genes * n_g * 0.3 + 2))
+        return (max(8.0, n_genes * n_g * 0.25 + 2), max(4.0, n_g * 0.5 + 2))
+
     def _plot_rank_genes_groups_dotplot(self, adata: ad.AnnData, request: PlotRequest) -> None:
         groupby = self._ensure_rank_genes_groups(adata, request)
+        n_genes = 5
+        figsize = self._rgg_figsize(adata.uns["rank_genes_groups"], n_genes)
+        sym_col = self._find_gene_symbol_column(adata)
         kwargs: dict[str, object] = {
             "groupby": groupby,
             "standard_scale": "var",
-            "n_genes": 5,
+            "n_genes": n_genes,
             "dendrogram": True,
+            "figsize": figsize,
             "show": False,
         }
-        if self._has_feature_name_column(adata):
-            kwargs["gene_symbols"] = "feature_name"
+        if sym_col:
+            kwargs["gene_symbols"] = sym_col
         sc.pl.rank_genes_groups_dotplot(adata, **kwargs)
+        self._relabel_var_axes(self._build_full_label_map(adata))
 
     def _plot_rank_genes_groups_matrixplot(self, adata: ad.AnnData, request: PlotRequest) -> None:
         groupby = self._ensure_rank_genes_groups(adata, request)
+        n_genes = 5
+        figsize = self._rgg_figsize(adata.uns["rank_genes_groups"], n_genes)
+        sym_col = self._find_gene_symbol_column(adata)
         kwargs: dict[str, object] = {
             "groupby": groupby,
-            "n_genes": 3,
+            "n_genes": n_genes,
             "use_raw": False,
             "vmin": -3,
             "vmax": 3,
             "cmap": "bwr",
+            "figsize": figsize,
             "show": False,
         }
-        if self._has_feature_name_column(adata):
-            kwargs["gene_symbols"] = "feature_name"
+        if sym_col:
+            kwargs["gene_symbols"] = sym_col
         sc.pl.rank_genes_groups_matrixplot(adata, **kwargs)
+        self._relabel_var_axes(self._build_full_label_map(adata))
 
     def _plot_rank_genes_groups_stacked_violin(self, adata: ad.AnnData, request: PlotRequest) -> None:
         groupby = self._ensure_rank_genes_groups(adata, request)
+        n_genes = 5
+        figsize = self._rgg_figsize(adata.uns["rank_genes_groups"], n_genes)
+        sym_col = self._find_gene_symbol_column(adata)
         kwargs: dict[str, object] = {
             "groupby": groupby,
-            "n_genes": 3,
+            "n_genes": n_genes,
             "cmap": "viridis_r",
+            "figsize": figsize,
             "show": False,
         }
-        if self._has_feature_name_column(adata):
-            kwargs["gene_symbols"] = "feature_name"
+        if sym_col:
+            kwargs["gene_symbols"] = sym_col
         sc.pl.rank_genes_groups_stacked_violin(adata, **kwargs)
+        self._relabel_var_axes(self._build_full_label_map(adata))
 
     def _plot_rank_genes_groups_heatmap(self, adata: ad.AnnData, request: PlotRequest) -> None:
         groupby = self._ensure_rank_genes_groups(adata, request)
+        n_genes = 5
+        # swap_axes=True: genes on x-axis, groups on y-axis
+        figsize = self._rgg_figsize(adata.uns["rank_genes_groups"], n_genes, swap_axes=True)
         kwargs: dict[str, object] = {
             "groupby": groupby,
-            "n_genes": 10,
+            "n_genes": n_genes,
             "use_raw": False,
             "swap_axes": True,
             "show_gene_labels": False,
             "vmin": -3,
             "vmax": 3,
             "cmap": "bwr",
+            "figsize": figsize,
             "show": False,
         }
-        if self._has_feature_name_column(adata):
-            kwargs["gene_symbols"] = "feature_name"
         sc.pl.rank_genes_groups_heatmap(adata, **kwargs)
+        self._relabel_var_axes(self._build_full_label_map(adata))
 
     def _plot_correlation_matrix(self, adata: ad.AnnData, request: PlotRequest) -> None:
         groupby = self._resolve_cell_type_column(adata, request.groupby)
@@ -3683,7 +4282,7 @@ class ScanpyPlotExecutor:
             self._remember_cell_type_column_if_valid(adata, request.color[0])
 
         use_gene_symbols = self._has_feature_name_column(adata)
-        plot_genes = self._resolve_feature_name_genes(adata, genes) if use_gene_symbols else self._resolve_gene_names(adata, genes)
+        plot_genes = self._resolve_gene_names(adata, genes)
 
         groupby = self._resolve_cell_type_column(adata, request.groupby)
         if not groupby:
@@ -3694,12 +4293,11 @@ class ScanpyPlotExecutor:
             "groupby": groupby,
             "dendrogram": False,
             "figsize": figure_size,
+            "use_raw": False,
             "show": False,
         }
-        if use_gene_symbols:
-            kwargs["gene_symbols"] = "feature_name"
-            kwargs["use_raw"] = False
         sc.pl.dotplot(adata, **kwargs)
+        self._relabel_var_axes(self._build_full_label_map(adata))
 
     def _plot_matrixplot(self, adata: ad.AnnData, request: PlotRequest) -> None:
         genes = request.genes or request.color
@@ -3711,7 +4309,7 @@ class ScanpyPlotExecutor:
             self._remember_cell_type_column_if_valid(adata, request.color[0])
 
         use_gene_symbols = self._has_feature_name_column(adata)
-        plot_genes = self._resolve_feature_name_genes(adata, genes) if use_gene_symbols else self._resolve_gene_names(adata, genes)
+        plot_genes = self._resolve_gene_names(adata, genes)
 
         groupby = self._resolve_cell_type_column(adata, request.groupby)
         if not groupby:
@@ -3720,12 +4318,11 @@ class ScanpyPlotExecutor:
             "var_names": plot_genes,
             "groupby": groupby,
             "dendrogram": False,
+            "use_raw": False,
             "show": False,
         }
-        if use_gene_symbols:
-            kwargs["gene_symbols"] = "feature_name"
-            kwargs["use_raw"] = False
         sc.pl.matrixplot(adata, **kwargs)
+        self._relabel_var_axes(self._build_full_label_map(adata))
 
     def _plot_heatmap(self, adata: ad.AnnData, request: PlotRequest) -> None:
         genes = request.genes or request.color
@@ -3737,7 +4334,7 @@ class ScanpyPlotExecutor:
             self._remember_cell_type_column_if_valid(adata, request.color[0])
 
         use_gene_symbols = self._has_feature_name_column(adata)
-        plot_genes = self._resolve_feature_name_genes(adata, genes) if use_gene_symbols else self._resolve_gene_names(adata, genes)
+        plot_genes = self._resolve_gene_names(adata, genes)
 
         groupby = self._resolve_cell_type_column(adata, request.groupby)
         if not groupby:
@@ -3745,9 +4342,8 @@ class ScanpyPlotExecutor:
         kwargs: dict[str, object] = {
             "var_names": plot_genes,
             "groupby": groupby,
+            "use_raw": False,
             "show": False,
         }
-        if use_gene_symbols:
-            kwargs["gene_symbols"] = "feature_name"
-            kwargs["use_raw"] = False
         sc.pl.heatmap(adata, **kwargs)
+        self._relabel_var_axes(self._build_full_label_map(adata))

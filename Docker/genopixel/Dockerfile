@@ -30,6 +30,7 @@ RUN python -m pip install --no-cache-dir -U pip \
     python-dotenv \
     anndata \
     scanpy \
-    seaborn
+    seaborn \
+    squidpy
 
 WORKDIR /work

@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import anndata as ad
+import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -27,1226 +29,1138 @@ _PLOTTER: ScanpyPlotExecutor | None = None
 _bearer = HTTPBearer(auto_error=False)
 
 
+class _ObsFilterMixin(BaseModel):
+    obs_filter_json: str = Field(
+        default="{}",
+        description="Subset cells: JSON {obs_col:[values]}, AND logic, case-insensitive.",
+    )
+
+
 class AnalyzeDatasetRequest(BaseModel):
     h5ad_path: str
     multiple_excel_row: int | None = None
 
 
-class GeneratePlotRequest(BaseModel):
+class GeneratePlotRequest(_ObsFilterMixin):
     plot_type: str = Field(
         default="umap",
-        description=(
-            "Type of Scanpy plot to generate for the currently loaded dataset. "
-            "Use 'umap' when the user asks for a UMAP plot."
-        ),
+        description="Plot type e.g. 'umap'.",
     )
     color_json: str | list[str] = Field(
         default="[]",
-        description=(
-            "JSON array or comma-separated list of observation columns or genes to color by. "
-            "Use [] when the user does not specify a coloring field."
-        ),
+        description="JSON array of obs columns or genes to color by; [] for none.",
     )
     genes_json: str | list[str] = Field(
         default="[]",
-        description=(
-            "JSON array or comma-separated list of genes used by gene-based plot types. "
-            "Use [] for a plain UMAP unless the user explicitly asks for genes."
-        ),
+        description="JSON array of genes; [] unless user specifies genes.",
     )
     groupby: str = Field(
         default="",
-        description="Optional observation column used by grouped plot types such as dotplot or violin.",
+        description="Groupby column.",
     )
     gene_symbols_column: str = Field(
         default="",
-        description="Optional column name that contains gene symbols if the dataset uses an alternate gene label column.",
+        description="var column with gene symbols; empty for auto.",
     )
-    title: str = Field(
-        default="",
-        description="Optional human-readable plot title.",
-    )
+    title: str = Field(default="")
 
 
-class HeatmapPlotRequest(BaseModel):
+class HeatmapPlotRequest(_ObsFilterMixin):
     markers_json: str | list[str] = Field(
         default="[]",
-        description=(
-            "JSON array or comma-separated list of genes to display in the heatmap. "
-            "If empty, the session markers set by set_markers are used. "
-            "Example: '[\"C1QA\",\"PSAP\",\"CD79A\",\"CD79B\",\"CST3\",\"LYZ\"]'."
-        ),
+        description="JSON array or comma-separated genes. Empty=session markers.",
     )
     groupby: str = Field(
         default="author_cell_type",
-        description="Observation column to group cells by on one axis. Default: 'author_cell_type'.",
+        description="Groupby column.",
     )
-    use_raw: bool | None = Field(default=None, description="Use the raw attribute of adata.")
-    log: bool = Field(default=False, description="Plot on a logarithmic scale.")
+    use_raw: bool | None = Field(default=None)
+    log: bool = Field(default=False, description="Log scale.")
     num_categories: int = Field(
         default=7,
-        description="Number of categories when groupby is continuous (non-categorical).",
+        description="Bins when groupby is continuous.",
     )
     dendrogram: bool = Field(
         default=False,
-        description="Add a dendrogram based on hierarchical clustering of the groupby categories.",
+        description="Add hierarchical dendrogram.",
     )
     gene_symbols: str = Field(
         default="",
-        description="Column in .var that contains gene symbols (leave empty to use var_names index).",
+        description="var column with gene symbols; leave empty for auto.",
     )
-    layer: str = Field(default="", description="AnnData layer to plot. Leave empty to use X or raw.")
+    layer: str = Field(default="", description="Layer; empty=X.")
     standard_scale: str = Field(
         default="",
-        description="Standardize values to [0,1] per 'var' (gene) or 'obs' (cell). Leave empty to skip.",
+        description="Normalize: 'var' or 'obs'. Leave empty to skip.",
     )
     swap_axes: bool = Field(
         default=True,
-        description="Swap axes: cell types on x-axis and genes on y-axis. Default True — gives category labels more room to spread out.",
+        description="Swap axes (genes/groups).",
     )
     show_gene_labels: bool | None = Field(
         default=None,
-        description="Show gene labels on the plot. Auto-detected (hidden when >50 genes) when None.",
+        description="Show gene labels; auto-detected when None.",
     )
     figsize_width: float | None = Field(
         default=None,
-        description="Figure width in inches. Auto-computed from gene/category count when None.",
+        description="Width inches; auto-computed.",
     )
     figsize_height: float | None = Field(
         default=None,
-        description="Figure height in inches. Auto-computed from gene/category count when None.",
+        description="Height inches; auto-computed.",
     )
-    vmin: float | None = Field(default=None, description="Lower color scale limit.")
-    vmax: float | None = Field(default=None, description="Upper color scale limit.")
-    vcenter: float | None = Field(
-        default=None, description="Center of the color scale (useful for diverging colormaps)."
+    vmin: float | None = Field(default=None)
+    vmax: float | None = Field(default=None)
+    vcenter: float | None = Field(default=None, description="Diverging colormap center.")
+    title: str = Field(default="")
+
+
+class LogUnmetRequestRequest(BaseModel):
+    user_request: str = Field(
+        description="The user's unfulfilled request."
     )
-    title: str = Field(default="", description="Optional plot title.")
+    active_dataset: str = Field(default="")
 
 
 class SetMarkersRequest(BaseModel):
     markers_json: str | list[str] = Field(
-        description=(
-            "JSON array or comma-separated list of gene markers to store as the session default. "
-            "Examples: '[\"C1QA\",\"PSAP\",\"CD79A\"]' or 'C1QA, PSAP, CD79A'. "
-            "These will be used automatically by any tool that accepts genes when no genes are specified."
-        ),
+        description="JSON array or comma-separated gene list to store as session defaults.",
     )
 
 
-class ViolinPlotRequest(BaseModel):
+class ViolinPlotRequest(_ObsFilterMixin):
     keys_json: str | list[str] = Field(
-        description=(
-            "JSON array or comma-separated list of genes or obs fields to plot "
-            "(e.g. '[\"OSMR\", \"TNF\"]'). Required."
-        ),
+        description="JSON array or comma-separated genes/obs fields. Required.",
     )
     groupby: str = Field(
         default="author_cell_type",
-        description=(
-            "Observation column to group by on the x-axis. "
-            "Defaults to 'author_cell_type'."
-        ),
+        description="Groupby column.",
     )
-    rotation: float = Field(
-        default=45.0,
-        description="Rotation angle in degrees for x-axis tick labels. Default: 45.",
-    )
-    log: bool = Field(default=False, description="Plot on a logarithmic axis.")
+    rotation: float = Field(default=45.0, include_in_schema=False)
+    log: bool = Field(default=False, description="Log scale.")
     use_raw: bool | None = Field(
         default=None,
-        description="Use the raw attribute of adata. Defaults to False when groupby is set.",
+        description="Use adata.raw; default False.",
     )
-    stripplot: bool = Field(
-        default=True,
-        description="Overlay a strip plot (individual data points) on the violin.",
-    )
-    jitter: float | bool = Field(
-        default=True,
-        description="Add jitter to the strip plot. Pass a float to control the amount.",
-    )
-    size: int = Field(default=1, description="Size of the jitter points.")
+    stripplot: bool = Field(default=True, include_in_schema=False)
+    jitter: float | bool = Field(default=True, include_in_schema=False)
+    size: int = Field(default=1, include_in_schema=False)
     layer: str = Field(
         default="",
-        description="AnnData layer to plot. Leave empty to use X or raw.",
+        description="Layer; empty=X.",
     )
-    density_norm: str = Field(
-        default="width",
-        description="How to scale violin width: 'width' (same width), 'area' (same area), or 'count' (proportional to N).",
-    )
+    density_norm: str = Field(default="width", include_in_schema=False)
     order_json: str = Field(
         default="",
-        description="JSON array specifying the order of categories on the x-axis (e.g. '[\"B cell\", \"T cell\"]').",
+        description="JSON array: x-axis category order.",
     )
-    multi_panel: bool | None = Field(
-        default=None,
-        description="Display each key in a separate panel. Auto-detected when None.",
-    )
-    xlabel: str = Field(default="", description="X-axis label.")
-    ylabel: str = Field(default="", description="Y-axis label.")
-    title: str = Field(default="", description="Optional plot title.")
+    multi_panel: bool | None = Field(default=None, include_in_schema=False)
+    xlabel: str = Field(default="", include_in_schema=False)
+    ylabel: str = Field(default="", include_in_schema=False)
+    title: str = Field(default="")
 
 
-class CellCountsBarplotRequest(BaseModel):
+class CellCountsBarplotRequest(_ObsFilterMixin):
     groupby: str = Field(
         default="author_cell_type",
-        description=(
-            "Observation column from adata.obs to count cells by. "
-            "Examples: 'author_cell_type', 'cell_type', 'disease', 'tissue', 'donor_id'. "
-            "Use print_adata_obs to discover available columns."
-        ),
+        description="Groupby column (e.g. 'author_cell_type', 'disease').",
     )
-    title: str = Field(
+    title: str = Field(default="")
+
+
+class CellTypeProportionBarplotRequest(_ObsFilterMixin):
+    groupby: str = Field(
+        default="author_cell_type",
+        description="Groupby column.",
+    )
+    sample_col: str = Field(
         default="",
-        description="Optional plot title. Defaults to 'Cell Counts by <groupby>'.",
+        description="Sample/donor column; empty=auto-detect.",
     )
+    title: str = Field(default="")
 
 
-class DotplotPlotRequest(BaseModel):
+class DotplotPlotRequest(_ObsFilterMixin):
     markers_json: str | list[str] = Field(
         default="[]",
-        description=(
-            "JSON array or comma-separated list of genes to display in the dot plot. "
-            "If empty, the session markers set by set_markers are used. "
-            "Example: '[\"C1QA\",\"PSAP\",\"CD79A\"]'."
-        ),
+        description="JSON array or comma-separated genes. Empty=session markers.",
     )
     groupby: str = Field(
         default="author_cell_type",
-        description="Observation column to group cells by. Default: 'author_cell_type'.",
+        description="Groupby column.",
     )
-    use_raw: bool | None = Field(default=None, description="Use the raw attribute of adata.")
-    log: bool = Field(default=False, description="Plot on a logarithmic scale.")
+    use_raw: bool | None = Field(default=None)
+    log: bool = Field(default=False, description="Log scale.")
     num_categories: int = Field(
         default=7,
-        description="Number of categories when groupby is continuous.",
+        description="Bins when groupby is continuous.",
     )
     categories_order_json: str = Field(
         default="",
-        description="JSON array specifying display order of groupby categories (e.g. '[\"B cell\",\"T cell\"]').",
+        description="JSON array: display order of categories.",
     )
     expression_cutoff: float = Field(
         default=0.0,
-        description="Expression value cutoff. Genes expressed below this in a group are not shown as expressed.",
+        description="Min expression cutoff.",
     )
-    mean_only_expressed: bool = Field(
-        default=False,
-        description="If True, compute mean expression only over cells that express the gene (> expression_cutoff).",
-    )
+    mean_only_expressed: bool = Field(default=False, include_in_schema=False)
     standard_scale: str = Field(
         default="",
-        description="Standardize values to [0,1] per 'var' (gene) or 'obs' (cell). Leave empty to skip.",
+        description="Normalize: 'var' or 'obs'. Leave empty to skip.",
     )
     dendrogram: bool = Field(
         default=False,
-        description="Add a dendrogram based on hierarchical clustering of the groupby categories.",
+        description="Add hierarchical dendrogram.",
     )
     gene_symbols: str = Field(
         default="",
-        description="Column in .var that contains gene symbols. Leave empty to use var_names index.",
+        description="var column with gene symbols; leave empty for auto.",
     )
-    layer: str = Field(default="", description="AnnData layer to plot. Leave empty to use X or raw.")
+    layer: str = Field(default="", description="Layer; empty=X.")
     swap_axes: bool = Field(
         default=False,
-        description="Swap axes: groups on x-axis, genes on y-axis. Useful when there are many groups.",
+        description="Swap axes (genes/groups).",
     )
-    vmin: float | None = Field(default=None, description="Lower color scale limit.")
-    vmax: float | None = Field(default=None, description="Upper color scale limit.")
-    vcenter: float | None = Field(
-        default=None, description="Center of the color scale (useful for diverging colormaps)."
-    )
-    cmap: str = Field(default="Reds", description="Colormap for dot color. Default: 'Reds'.")
-    dot_max: float | None = Field(
-        default=None,
-        description="Maximum dot size. Values above this are clipped to this size.",
-    )
-    dot_min: float | None = Field(
-        default=None,
-        description="Minimum dot size. Values below this are not shown.",
-    )
-    smallest_dot: float = Field(
-        default=0.0,
-        description="Smallest dot size in points. Useful to make dots with very low expression still visible.",
-    )
-    colorbar_title: str = Field(
-        default="",
-        description="Title for the color bar. Defaults to 'Mean expression in group'.",
-    )
-    size_title: str = Field(
-        default="",
-        description="Title for the size legend. Defaults to 'Fraction of cells in group (%)'.",
-    )
+    vmin: float | None = Field(default=None)
+    vmax: float | None = Field(default=None)
+    vcenter: float | None = Field(default=None, description="Diverging colormap center.")
+    cmap: str = Field(default="Reds", description="Colormap name.")
+    dot_max: float | None = Field(default=None, include_in_schema=False)
+    dot_min: float | None = Field(default=None, include_in_schema=False)
+    smallest_dot: float = Field(default=0.0, include_in_schema=False)
+    colorbar_title: str = Field(default="", include_in_schema=False)
+    size_title: str = Field(default="", include_in_schema=False)
     figsize_width: float | None = Field(
         default=None,
-        description="Figure width in inches. Auto-computed from gene/category count when None.",
+        description="Width inches; auto-computed.",
     )
     figsize_height: float | None = Field(
         default=None,
-        description="Figure height in inches. Auto-computed from gene/category count when None.",
+        description="Height inches; auto-computed.",
     )
-    title: str = Field(default="", description="Optional plot title.")
+    title: str = Field(default="")
 
 
-class RankGenesGroupsViolinRequest(BaseModel):
+class RankGenesGroupsViolinRequest(_ObsFilterMixin):
     groups_json: str = Field(
         default="",
-        description=(
-            "JSON array of specific group names to display (e.g. '[\"B cell\",\"T cell\"]'). "
-            "Leave empty to display all groups."
-        ),
+        description="JSON array of groups to show; empty=all.",
     )
     n_genes: int = Field(
-        default=20,
-        description="Number of top-ranked genes to show per group. Default: 20.",
+        default=5,
+        description="Top genes per group.",
     )
     gene_names_json: str = Field(
         default="",
-        description=(
-            "JSON array of specific gene names to plot instead of the top-ranked genes "
-            "(e.g. '[\"CD3E\",\"CD79A\"]'). Leave empty to use the ranked results."
-        ),
+        description="JSON gene list override; empty=use ranked.",
     )
     gene_symbols: str = Field(
         default="",
-        description="Column in .var that contains gene symbols. Leave empty to use var_names index.",
+        description="var column with gene symbols; leave empty for auto.",
     )
-    use_raw: bool | None = Field(default=None, description="Use the raw attribute of adata.")
+    use_raw: bool | None = Field(default=None)
     key: str = Field(
         default="rank_genes_groups",
-        description="Key in adata.uns where ranking results are stored. Default: 'rank_genes_groups'.",
+        description="adata.uns key for results.",
     )
-    split: bool = Field(
-        default=True,
-        description="Split violin by group (True) or show a single violin per gene (False). Default: True.",
-    )
-    density_norm: str = Field(
-        default="width",
-        description="Violin density normalization: 'width', 'area', or 'count'. Default: 'width'.",
-    )
-    strip: bool = Field(default=True, description="Overlay individual data points as a strip plot.")
-    jitter: float | bool = Field(default=True, description="Add jitter to strip plot points.")
-    size: int = Field(default=1, description="Point size for strip plot.")
-    title: str = Field(default="", description="Optional plot title.")
+    split: bool = Field(default=True, include_in_schema=False)
+    density_norm: str = Field(default="width", include_in_schema=False)
+    strip: bool = Field(default=True, include_in_schema=False)
+    jitter: float | bool = Field(default=True, include_in_schema=False)
+    size: int = Field(default=1, include_in_schema=False)
+    title: str = Field(default="")
 
 
-class RankGenesGroupsStackedViolinRequest(BaseModel):
+class RankGenesGroupsStackedViolinRequest(_ObsFilterMixin):
     groups_json: str = Field(
         default="",
-        description=(
-            "JSON array of specific group names to display (e.g. '[\"B cell\",\"T cell\"]'). "
-            "Leave empty to display all groups."
-        ),
+        description="JSON array of groups to show; empty=all.",
     )
     n_genes: int = Field(
-        default=10,
-        description="Number of top-ranked genes to show per group. Default: 10.",
+        default=5,
+        description="Top genes per group.",
     )
     gene_symbols: str = Field(
         default="",
-        description="Column in .var that contains gene symbols. Leave empty to use var_names index.",
+        description="var column with gene symbols; leave empty for auto.",
     )
     var_names_json: str = Field(
         default="",
-        description=(
-            "JSON array of specific gene names to override the ranked genes "
-            "(e.g. '[\"CD3E\",\"CD79A\"]'). Leave empty to use the ranked results."
-        ),
+        description="JSON gene list override; empty=use ranked.",
     )
     min_logfoldchange: float | None = Field(
         default=None,
-        description="Minimum log fold change threshold. Genes below this are excluded. Default: None.",
+        description="Min log fold-change filter.",
     )
     key: str = Field(
         default="rank_genes_groups",
-        description="Key in adata.uns where ranking results are stored. Default: 'rank_genes_groups'.",
+        description="adata.uns key for results.",
     )
     swap_axes: bool = Field(
         default=False,
-        description="Swap genes and groups axes. Useful when there are many cell types. Default: False.",
+        description="Swap axes (genes/groups).",
     )
     cmap: str = Field(
         default="Blues",
-        description="Colormap for the violin fill. Default: 'Blues'.",
+        description="Colormap name.",
     )
-    stripplot: bool = Field(
-        default=False,
-        description="Overlay individual data points as a strip plot. Default: False.",
-    )
-    jitter: bool = Field(
-        default=False,
-        description="Add jitter to strip plot points. Default: False.",
-    )
-    size: int = Field(default=1, description="Point size for strip plot. Default: 1.")
-    row_palette: str = Field(
-        default="",
-        description="Palette for the row colors (gene rows). Leave empty for default.",
-    )
-    yticklabels: bool = Field(
-        default=False,
-        description="Show y-axis tick labels. Default: False.",
-    )
+    stripplot: bool = Field(default=False, include_in_schema=False)
+    jitter: bool = Field(default=False, include_in_schema=False)
+    size: int = Field(default=1, include_in_schema=False)
+    row_palette: str = Field(default="", include_in_schema=False)
+    yticklabels: bool = Field(default=False, include_in_schema=False)
     standard_scale: str = Field(
         default="",
-        description="Standardize data: 'var' (per gene) or 'obs' (per cell). Leave empty for none.",
+        description="Normalize: 'var' or 'obs'. Leave empty to skip.",
     )
-    vmin: float | None = Field(default=None, description="Minimum color scale value.")
-    vmax: float | None = Field(default=None, description="Maximum color scale value.")
-    vcenter: float | None = Field(default=None, description="Center of the color scale (for diverging colormaps).")
-    colorbar_title: str = Field(default="", description="Title for the colorbar.")
+    vmin: float | None = Field(default=None)
+    vmax: float | None = Field(default=None)
+    vcenter: float | None = Field(default=None, description="Diverging colormap center.")
+    colorbar_title: str = Field(default="", include_in_schema=False)
     figsize_width: float | None = Field(
         default=None,
-        description="Figure width in inches. Auto-computed from gene/group count when None.",
+        description="Width inches; auto-computed.",
     )
     figsize_height: float | None = Field(
         default=None,
-        description="Figure height in inches. Auto-computed from gene/group count when None.",
+        description="Height inches; auto-computed.",
     )
-    title: str = Field(default="", description="Optional plot title.")
+    title: str = Field(default="")
 
 
-class RankGenesGroupsPlotRequest(BaseModel):
+class RankGenesGroupsPlotRequest(_ObsFilterMixin):
     groups_json: str = Field(
         default="",
-        description=(
-            "JSON array of specific group names to display (e.g. '[\"B cell\",\"T cell\"]'). "
-            "Leave empty to display all groups."
-        ),
+        description="JSON array of groups to show; empty=all.",
     )
     n_genes: int = Field(
-        default=20,
-        description="Number of top-ranked genes to show per group panel. Default: 20.",
+        default=5,
+        description="Top genes per group.",
     )
     gene_symbols: str = Field(
         default="",
-        description="Column in .var that contains gene symbols. Leave empty to use var_names index.",
+        description="var column with gene symbols; leave empty for auto.",
     )
     key: str = Field(
         default="rank_genes_groups",
-        description=(
-            "Key in adata.uns where the ranking results are stored. "
-            "Default: 'rank_genes_groups'. Change only if results were stored under a different key."
-        ),
+        description="adata.uns key for results.",
     )
-    fontsize: int = Field(default=8, description="Font size for gene labels in each panel. Default: 8.")
-    ncols: int = Field(default=4, description="Number of group panels per row. Default: 4.")
-    sharey: bool = Field(
-        default=True,
-        description="Share the y-axis range across all panels for easy comparison. Default: True.",
-    )
-    title: str = Field(default="", description="Optional plot title.")
+    fontsize: int = Field(default=11, include_in_schema=False)
+    ncols: int = Field(default=3, include_in_schema=False)
+    sharey: bool = Field(default=True, include_in_schema=False)
+    title: str = Field(default="")
 
 
-class RankGenesGroupsHeatmapRequest(BaseModel):
+class RankGenesGroupsHeatmapRequest(_ObsFilterMixin):
     groups_json: str = Field(
         default="",
-        description=(
-            "JSON array of specific group names to include (e.g. '[\"B cell\",\"T cell\"]'). "
-            "Leave empty to display all groups."
-        ),
+        description="JSON array of groups to show; empty=all.",
     )
-    n_genes: int | None = Field(
-        default=None,
-        description=(
-            "Number of top genes to show per group. Use a negative value to show down-regulated genes. "
-            "Defaults to 10 when not provided."
-        ),
+    n_genes: int = Field(
+        default=5,
+        description="Top genes per group; negative for down-regulated.",
     )
     groupby: str = Field(
         default="",
-        description="Observation column to group cells by. Inferred from rank_genes_groups params when empty.",
+        description="Groupby column; inferred when empty.",
     )
     gene_symbols: str = Field(
         default="",
-        description="Column in .var that contains gene symbols. Leave empty to auto-detect or use var_names index.",
+        description="var column with gene symbols; leave empty for auto.",
     )
     min_logfoldchange: float | None = Field(
         default=None,
-        description="Minimum log fold-change threshold — genes below this value are excluded.",
+        description="Min log fold-change filter.",
     )
     key: str = Field(
         default="rank_genes_groups",
-        description="Key in adata.uns where rank_genes_groups results are stored.",
+        description="adata.uns key for results.",
     )
     standard_scale: str = Field(
         default="",
-        description="Standardize values to [0,1] per 'var' (gene) or 'obs' (cell). Leave empty to skip.",
+        description="Normalize: 'var' or 'obs'. Leave empty to skip.",
     )
     swap_axes: bool = Field(
         default=False,
-        description="Swap axes so genes appear on the x-axis and cell groups on the y-axis.",
+        description="Swap axes (genes/groups).",
     )
     show_gene_labels: bool | None = Field(
         default=None,
-        description="Show gene labels on the heatmap. Auto-detected when None.",
+        description="Show gene labels; auto-detected when None.",
     )
     cmap: str = Field(
         default="",
-        description="Matplotlib colormap name (e.g. 'bwr', 'viridis', 'RdBu_r'). Leave empty for scanpy default.",
+        description="Colormap name; empty=scanpy default.",
     )
-    vmin: float | None = Field(default=None, description="Lower color scale limit.")
-    vmax: float | None = Field(default=None, description="Upper color scale limit.")
-    vcenter: float | None = Field(
-        default=None,
-        description="Center of the color scale — useful for diverging colormaps like 'bwr'.",
-    )
+    vmin: float | None = Field(default=None)
+    vmax: float | None = Field(default=None)
+    vcenter: float | None = Field(default=None, description="Diverging colormap center.")
     figsize_width: float | None = Field(
         default=None,
-        description="Figure width in inches. Auto-computed when None.",
+        description="Width inches; auto-computed.",
     )
     figsize_height: float | None = Field(
         default=None,
-        description="Figure height in inches. Auto-computed when None.",
+        description="Height inches; auto-computed.",
     )
-    title: str = Field(default="", description="Optional plot title.")
+    title: str = Field(default="")
 
 
-class RankGenesGroupsDotplotRequest(BaseModel):
+class RankGenesGroupsDotplotRequest(_ObsFilterMixin):
     groups_json: str = Field(
         default="",
-        description=(
-            "JSON array of specific group names to include (e.g. '[\"B cell\",\"T cell\"]'). "
-            "Leave empty to display all groups."
-        ),
+        description="JSON array of groups to show; empty=all.",
     )
-    n_genes: int | None = Field(
-        default=None,
-        description=(
-            "Number of top genes to show per group. Use a negative value to show down-regulated genes. "
-            "Defaults to 5 when not provided."
-        ),
+    n_genes: int = Field(
+        default=5,
+        description="Top genes per group; negative for down-regulated.",
     )
     groupby: str = Field(
         default="",
-        description="Observation column to group cells by. Inferred from rank_genes_groups params when empty.",
+        description="Groupby column; inferred when empty.",
     )
     gene_symbols: str = Field(
         default="",
-        description="Column in .var that contains gene symbols. Leave empty to auto-detect or use var_names index.",
+        description="var column with gene symbols; leave empty for auto.",
     )
     min_logfoldchange: float | None = Field(
         default=None,
-        description="Minimum log fold-change threshold — genes below this value are excluded.",
+        description="Min log fold-change filter.",
     )
     key: str = Field(
         default="rank_genes_groups",
-        description="Key in adata.uns where rank_genes_groups results are stored.",
+        description="adata.uns key for results.",
     )
     values_to_plot: str = Field(
         default="",
-        description=(
-            "Metric to encode as dot color instead of mean expression. "
-            "One of: 'scores', 'logfoldchanges', 'pvals', 'pvals_adj', 'log10_pvals', 'log10_pvals_adj'. "
-            "Leave empty to use mean expression."
-        ),
+        description="Color metric: 'scores','logfoldchanges','pvals','pvals_adj'. Empty=mean expr.",
     )
     standard_scale: str = Field(
         default="",
-        description="Standardize values to [0,1] per 'var' (gene) or 'obs' (cell). Leave empty to skip.",
+        description="Normalize: 'var' or 'obs'. Leave empty to skip.",
     )
     dendrogram: bool = Field(
         default=False,
-        description="Add a dendrogram based on hierarchical clustering of the groupby categories.",
+        description="Add hierarchical dendrogram.",
     )
     swap_axes: bool = Field(
         default=False,
-        description="Swap axes so genes appear on the x-axis and cell groups on the y-axis.",
+        description="Swap axes (genes/groups).",
     )
     cmap: str = Field(
         default="",
-        description="Matplotlib colormap name (e.g. 'Reds', 'Blues', 'viridis'). Leave empty for scanpy default.",
+        description="Colormap name; empty=scanpy default.",
     )
-    dot_max: float | None = Field(
-        default=None,
-        description="Maximum dot size (fraction of largest dot). Between 0 and 1.",
-    )
-    dot_min: float | None = Field(
-        default=None,
-        description="Minimum dot size (fraction of largest dot). Between 0 and 1.",
-    )
-    vmin: float | None = Field(default=None, description="Lower color scale limit.")
-    vmax: float | None = Field(default=None, description="Upper color scale limit.")
-    vcenter: float | None = Field(
-        default=None,
-        description="Center of the color scale — useful for diverging colormaps.",
-    )
+    dot_max: float | None = Field(default=None, include_in_schema=False)
+    dot_min: float | None = Field(default=None, include_in_schema=False)
+    vmin: float | None = Field(default=None)
+    vmax: float | None = Field(default=None)
+    vcenter: float | None = Field(default=None, description="Diverging colormap center.")
     figsize_width: float | None = Field(
         default=None,
-        description="Figure width in inches. Auto-computed when None.",
+        description="Width inches; auto-computed.",
     )
     figsize_height: float | None = Field(
         default=None,
-        description="Figure height in inches. Auto-computed when None.",
+        description="Height inches; auto-computed.",
     )
-    title: str = Field(default="", description="Optional plot title.")
+    title: str = Field(default="")
 
 
-class RankGenesGroupsMatrixplotRequest(BaseModel):
+class RankGenesGroupsMatrixplotRequest(_ObsFilterMixin):
     groups_json: str = Field(
         default="",
-        description=(
-            "JSON array of specific group names to include (e.g. '[\"B cell\",\"T cell\"]'). "
-            "Leave empty to display all groups."
-        ),
+        description="JSON array of groups to show; empty=all.",
     )
-    n_genes: int | None = Field(
-        default=None,
-        description=(
-            "Number of top genes to show per group. Use a negative value to show down-regulated genes. "
-            "Defaults to 3 when not provided."
-        ),
+    n_genes: int = Field(
+        default=5,
+        description="Top genes per group; negative for down-regulated.",
     )
     groupby: str = Field(
         default="",
-        description="Observation column to group cells by. Inferred from rank_genes_groups params when empty.",
+        description="Groupby column; inferred when empty.",
     )
     gene_symbols: str = Field(
         default="",
-        description="Column in .var that contains gene symbols. Leave empty to auto-detect or use var_names index.",
+        description="var column with gene symbols; leave empty for auto.",
     )
     min_logfoldchange: float | None = Field(
         default=None,
-        description="Minimum log fold-change threshold — genes below this value are excluded.",
+        description="Min log fold-change filter.",
     )
     key: str = Field(
         default="rank_genes_groups",
-        description="Key in adata.uns where rank_genes_groups results are stored.",
+        description="adata.uns key for results.",
     )
     values_to_plot: str = Field(
         default="",
-        description=(
-            "Metric to display instead of mean expression. "
-            "One of: 'scores', 'logfoldchanges', 'pvals', 'pvals_adj', 'log10_pvals', 'log10_pvals_adj'. "
-            "Leave empty to use mean expression."
-        ),
+        description="Color metric: 'scores','logfoldchanges','pvals','pvals_adj'. Empty=mean expr.",
     )
     standard_scale: str = Field(
         default="",
-        description="Standardize values to [0,1] per 'var' (gene) or 'obs' (cell). Leave empty to skip.",
+        description="Normalize: 'var' or 'obs'. Leave empty to skip.",
     )
     dendrogram: bool = Field(
         default=False,
-        description="Add a dendrogram based on hierarchical clustering of the groupby categories.",
+        description="Add hierarchical dendrogram.",
     )
     swap_axes: bool = Field(
         default=False,
-        description="Swap axes so genes appear on the x-axis and cell groups on the y-axis.",
+        description="Swap axes (genes/groups).",
     )
     cmap: str = Field(
         default="",
-        description="Matplotlib colormap name (e.g. 'bwr', 'viridis', 'RdBu_r'). Leave empty for scanpy default.",
+        description="Colormap name; empty=scanpy default.",
     )
-    vmin: float | None = Field(default=None, description="Lower color scale limit.")
-    vmax: float | None = Field(default=None, description="Upper color scale limit.")
-    vcenter: float | None = Field(
-        default=None,
-        description="Center of the color scale — useful for diverging colormaps like 'bwr'.",
-    )
-    colorbar_title: str = Field(
-        default="",
-        description="Title for the color bar (e.g. 'Mean expression\\nin group').",
-    )
+    vmin: float | None = Field(default=None)
+    vmax: float | None = Field(default=None)
+    vcenter: float | None = Field(default=None, description="Diverging colormap center.")
+    colorbar_title: str = Field(default="", include_in_schema=False)
     figsize_width: float | None = Field(
         default=None,
-        description="Figure width in inches. Auto-computed when None.",
+        description="Width inches; auto-computed.",
     )
     figsize_height: float | None = Field(
         default=None,
-        description="Figure height in inches. Auto-computed when None.",
+        description="Height inches; auto-computed.",
     )
-    title: str = Field(default="", description="Optional plot title.")
+    title: str = Field(default="")
 
 
-class RankGenesGroupsTracksplotRequest(BaseModel):
+class RankGenesGroupsTracksplotRequest(_ObsFilterMixin):
     groups_json: str = Field(
         default="",
-        description=(
-            "JSON array of specific group names to include (e.g. '[\"B cell\",\"T cell\"]'). "
-            "Leave empty to display all groups."
-        ),
+        description="JSON array of groups to show; empty=all.",
     )
-    n_genes: int | None = Field(
-        default=None,
-        description=(
-            "Number of top genes to show per group. Use a negative value to show down-regulated genes. "
-            "Defaults to 10 when not provided."
-        ),
+    n_genes: int = Field(
+        default=5,
+        description="Top genes per group; negative for down-regulated.",
     )
     groupby: str = Field(
         default="",
-        description="Observation column to group cells by. Inferred from rank_genes_groups params when empty.",
+        description="Groupby column; inferred when empty.",
     )
     gene_symbols: str = Field(
         default="",
-        description="Column in .var that contains gene symbols. Leave empty to auto-detect or use var_names index.",
+        description="var column with gene symbols; leave empty for auto.",
     )
     min_logfoldchange: float | None = Field(
         default=None,
-        description="Minimum log fold-change threshold — genes below this value are excluded.",
+        description="Min log fold-change filter.",
     )
     key: str = Field(
         default="rank_genes_groups",
-        description="Key in adata.uns where rank_genes_groups results are stored.",
+        description="adata.uns key for results.",
     )
     dendrogram: bool = Field(
         default=False,
-        description="Add a dendrogram based on hierarchical clustering of the groupby categories.",
+        description="Add hierarchical dendrogram.",
     )
     use_raw: bool | None = Field(
         default=None,
-        description="Use the raw attribute of adata if present. Auto-detected when None.",
+        description="Use adata.raw; default False.",
     )
-    log: bool = Field(
-        default=False,
-        description="Plot values on a logarithmic scale.",
-    )
+    log: bool = Field(default=False)
     layer: str = Field(
         default="",
-        description="AnnData layer to use instead of X or raw. Leave empty to use default.",
+        description="Layer; empty=X.",
     )
     figsize_width: float | None = Field(
         default=None,
-        description="Figure width in inches. Auto-computed when None.",
+        description="Width inches; auto-computed.",
     )
     figsize_height: float | None = Field(
         default=None,
-        description="Figure height in inches. Auto-computed when None.",
+        description="Height inches; auto-computed.",
     )
-    title: str = Field(default="", description="Optional plot title.")
+    title: str = Field(default="")
 
 
-class CorrelationMatrixRequest(BaseModel):
+class CorrelationMatrixRequest(_ObsFilterMixin):
     groupby: str = Field(
         default="",
-        description="Observation column to group cells by for the correlation matrix. Inferred when empty.",
+        description="Groupby column; inferred when empty.",
     )
-    show_correlation_numbers: bool = Field(
-        default=False,
-        description="Overlay the correlation value on each cell of the matrix.",
-    )
+    show_correlation_numbers: bool = Field(default=False, include_in_schema=False)
     dendrogram: bool | None = Field(
         default=None,
-        description="Add a hierarchical clustering dendrogram. Auto-detected when None.",
+        description="Add dendrogram; auto when None.",
     )
     cmap: str = Field(
         default="",
-        description="Matplotlib colormap name (e.g. 'RdBu_r', 'coolwarm'). Leave empty for scanpy default.",
+        description="Colormap name; empty=scanpy default.",
     )
-    vmin: float | None = Field(default=None, description="Lower color scale limit.")
-    vmax: float | None = Field(default=None, description="Upper color scale limit.")
-    vcenter: float | None = Field(
-        default=None,
-        description="Center of the color scale — useful for diverging colormaps.",
-    )
+    vmin: float | None = Field(default=None)
+    vmax: float | None = Field(default=None)
+    vcenter: float | None = Field(default=None, description="Diverging colormap center.")
     figsize_width: float | None = Field(
         default=None,
-        description="Figure width in inches. Auto-computed as a square based on category count when None.",
+        description="Width inches; auto-computed.",
     )
     figsize_height: float | None = Field(
         default=None,
-        description="Figure height in inches. Auto-computed as a square based on category count when None.",
+        description="Height inches; auto-computed.",
     )
-    title: str = Field(default="", description="Optional plot title.")
+    title: str = Field(default="")
 
 
-class EmbeddingPlotRequest(BaseModel):
+class EmbeddingPlotRequest(_ObsFilterMixin):
     basis: str = Field(
-        description=(
-            "Name of the embedding to plot. Examples: 'umap', 'tsne', 'pca', 'diffmap', 'draw_graph_fa'. "
-            "Can be specified with or without the 'X_' prefix. "
-            "Call print_adata_obs or check active dataset info to see which embeddings are available."
-        ),
+        description="Embedding name e.g. 'umap','pca','draw_graph_fa' (X_ prefix optional).",
     )
     color_json: str | list[str] = Field(
         default="[]",
-        description=(
-            "JSON array or comma-separated list of observation columns or gene names to color by. "
-            "Examples: '[\"author_cell_type\"]' or '[\"CD3E\",\"CD79A\"]'. "
-            "Leave empty to auto-color by the inferred cell type column."
-        ),
+        description="JSON array of obs columns or genes to color by; empty=auto.",
     )
     components: str = Field(
         default="",
-        description=(
-            "Components to plot, e.g. '1,2' or '2,3'. "
-            "Leave empty to use the default (first two components)."
-        ),
+        description="Components e.g. '1,2'; empty=default.",
     )
-    use_raw: bool | None = Field(default=None, description="Use the raw attribute of adata for gene expression.")
-    layer: str = Field(default="", description="AnnData layer to use for coloring. Leave empty for X or raw.")
+    use_raw: bool | None = Field(default=None)
+    layer: str = Field(default="", description="Layer; empty=X.")
     gene_symbols: str = Field(
         default="",
-        description="Column in .var that contains gene symbols. Leave empty to use var_names index.",
+        description="var column with gene symbols; leave empty for auto.",
     )
     legend_loc: str = Field(
         default="right margin",
-        description="Legend position: 'right margin', 'on data', 'best', 'upper right', etc. Default: 'right margin'.",
+        description="Legend position.",
     )
-    legend_fontsize: float | None = Field(default=None, description="Legend font size in points. Auto-scaled when None.")
-    legend_fontweight: str = Field(default="bold", description="Legend font weight. Default: 'bold'.")
-    colorbar_loc: str = Field(default="right", description="Colorbar position for continuous color keys. Default: 'right'.")
+    legend_fontsize: float | None = Field(default=None, include_in_schema=False)
+    legend_fontweight: str = Field(default="bold", include_in_schema=False)
+    colorbar_loc: str = Field(default="right", include_in_schema=False)
     color_map: str = Field(
         default="",
-        description="Colormap for continuous variables (e.g. 'viridis', 'RdBu_r'). Leave empty for default.",
+        description="Colormap; empty=default.",
     )
     palette: str = Field(
         default="",
-        description="Color palette for categorical variables (e.g. 'tab20'). Leave empty for default.",
+        description="Palette; empty=default.",
     )
-    na_color: str = Field(default="lightgray", description="Color for cells with missing values. Default: 'lightgray'.")
-    na_in_legend: bool = Field(default=True, description="Include NA category in the legend.")
-    size: float | None = Field(
-        default=None,
-        description="Point size. Auto-calculated from cell count when None (120000 / n_cells).",
-    )
-    frameon: bool | None = Field(default=None, description="Show plot frame. Uses global settings when None.")
+    na_color: str = Field(default="lightgray", include_in_schema=False)
+    na_in_legend: bool = Field(default=True, include_in_schema=False)
+    size: float | None = Field(default=None, include_in_schema=False)
+    frameon: bool | None = Field(default=None, include_in_schema=False)
     vmin: str | None = Field(
         default=None,
-        description="Lower color scale limit. Supports percentile syntax e.g. 'p1.5'. Leave empty for auto.",
+        description="Lower color limit; percentile syntax e.g. 'p1.5'.",
     )
     vmax: str | None = Field(
         default=None,
-        description="Upper color scale limit. Supports percentile syntax e.g. 'p98'. Leave empty for auto.",
+        description="Upper color limit; percentile syntax e.g. 'p98'.",
     )
-    vcenter: float | None = Field(default=None, description="Center value for diverging colormaps.")
-    add_outline: bool = Field(default=False, description="Add a border outline around each group of dots.")
-    sort_order: bool = Field(default=True, description="Plot higher-value points on top of lower-value ones.")
-    edges: bool = Field(default=False, description="Overlay neighborhood graph edges on the embedding.")
-    edges_width: float = Field(default=0.1, description="Width of graph edges when edges=True.")
-    edges_color: str = Field(default="grey", description="Color of graph edges when edges=True.")
+    vcenter: float | None = Field(default=None, description="Diverging colormap center.")
+    add_outline: bool = Field(default=False, include_in_schema=False)
+    sort_order: bool = Field(default=True, include_in_schema=False)
+    edges: bool = Field(default=False, include_in_schema=False)
+    edges_width: float = Field(default=0.1, include_in_schema=False)
+    edges_color: str = Field(default="grey", include_in_schema=False)
     groups_json: str = Field(
         default="",
-        description="JSON array of category values to highlight; all others are greyed out (e.g. '[\"B cell\"]').",
+        description="JSON categories to highlight; others greyed out.",
     )
-    projection: str = Field(default="2d", description="Projection type: '2d' or '3d'. Default: '2d'.")
-    ncols: int = Field(default=4, description="Number of panels per row when multiple color keys are given.")
-    title: str = Field(default="", description="Optional plot title.")
+    projection: str = Field(default="2d", include_in_schema=False)
+    ncols: int = Field(default=4, include_in_schema=False)
+    title: str = Field(default="")
 
 
-class DiffmapPlotRequest(BaseModel):
+class DiffmapPlotRequest(_ObsFilterMixin):
     color_json: str | list[str] = Field(
         default="[]",
-        description=(
-            "JSON array or comma-separated list of observation columns or gene names to color by. "
-            "Examples: '[\"author_cell_type\"]' or '[\"CD3E\",\"CD79A\"]'. "
-            "Leave empty to auto-color by the inferred cell type column."
-        ),
+        description="JSON array of obs columns or genes to color by; empty=auto.",
     )
     components: str = Field(
         default="",
-        description=(
-            "Diffusion components to plot, e.g. '1,2' (DC1 vs DC2) or '2,3' (DC2 vs DC3). "
-            "Leave empty to use the default (first two components)."
-        ),
+        description="Components e.g. '1,2'; empty=default.",
     )
-    use_raw: bool | None = Field(default=None, description="Use the raw attribute of adata for gene expression.")
-    layer: str = Field(default="", description="AnnData layer to use for coloring. Leave empty for X or raw.")
+    use_raw: bool | None = Field(default=None)
+    layer: str = Field(default="", description="Layer; empty=X.")
     gene_symbols: str = Field(
         default="",
-        description="Column in .var that contains gene symbols. Leave empty to use var_names index.",
+        description="var column with gene symbols; leave empty for auto.",
     )
     legend_loc: str = Field(
         default="right margin",
-        description="Legend position: 'right margin', 'on data', 'best', 'upper right', etc. Default: 'right margin'.",
+        description="Legend position.",
     )
-    legend_fontsize: float | None = Field(default=None, description="Legend font size in points. Auto-scaled when None.")
-    legend_fontweight: str = Field(default="bold", description="Legend font weight. Default: 'bold'.")
-    colorbar_loc: str = Field(default="right", description="Colorbar position for continuous color keys. Default: 'right'.")
+    legend_fontsize: float | None = Field(default=None, include_in_schema=False)
+    legend_fontweight: str = Field(default="bold", include_in_schema=False)
+    colorbar_loc: str = Field(default="right", include_in_schema=False)
     color_map: str = Field(
         default="",
-        description="Colormap for continuous variables (e.g. 'viridis', 'RdBu_r'). Leave empty for default.",
+        description="Colormap; empty=default.",
     )
     palette: str = Field(
         default="",
-        description="Color palette for categorical variables (e.g. 'tab20'). Leave empty for default.",
+        description="Palette; empty=default.",
     )
-    na_color: str = Field(default="lightgray", description="Color for cells with missing values. Default: 'lightgray'.")
-    na_in_legend: bool = Field(default=True, description="Include NA category in the legend.")
-    size: float | None = Field(
-        default=None,
-        description="Point size. Auto-calculated from cell count when None (120000 / n_cells).",
-    )
-    frameon: bool | None = Field(default=None, description="Show plot frame. Uses global settings when None.")
+    na_color: str = Field(default="lightgray", include_in_schema=False)
+    na_in_legend: bool = Field(default=True, include_in_schema=False)
+    size: float | None = Field(default=None, include_in_schema=False)
+    frameon: bool | None = Field(default=None, include_in_schema=False)
     vmin: str | None = Field(
         default=None,
-        description="Lower color scale limit. Supports percentile syntax e.g. 'p1.5'. Leave empty for auto.",
+        description="Lower color limit; percentile syntax e.g. 'p1.5'.",
     )
     vmax: str | None = Field(
         default=None,
-        description="Upper color scale limit. Supports percentile syntax e.g. 'p98'. Leave empty for auto.",
+        description="Upper color limit; percentile syntax e.g. 'p98'.",
     )
-    vcenter: float | None = Field(default=None, description="Center value for diverging colormaps.")
-    add_outline: bool = Field(default=False, description="Add a border outline around each group of dots.")
-    sort_order: bool = Field(default=True, description="Plot higher-value points on top of lower-value ones.")
-    edges: bool = Field(default=False, description="Overlay neighborhood graph edges on the embedding.")
-    edges_width: float = Field(default=0.1, description="Width of graph edges when edges=True.")
-    edges_color: str = Field(default="grey", description="Color of graph edges when edges=True.")
+    vcenter: float | None = Field(default=None, description="Diverging colormap center.")
+    add_outline: bool = Field(default=False, include_in_schema=False)
+    sort_order: bool = Field(default=True, include_in_schema=False)
+    edges: bool = Field(default=False, include_in_schema=False)
+    edges_width: float = Field(default=0.1, include_in_schema=False)
+    edges_color: str = Field(default="grey", include_in_schema=False)
     groups_json: str = Field(
         default="",
-        description="JSON array of category values to highlight; all others are greyed out (e.g. '[\"B cell\"]').",
+        description="JSON categories to highlight; others greyed out.",
     )
-    ncols: int = Field(default=4, description="Number of panels per row when multiple color keys are given.")
-    title: str = Field(default="", description="Optional plot title.")
+    ncols: int = Field(default=4, include_in_schema=False)
+    title: str = Field(default="")
 
 
-class UmapPlotRequest(BaseModel):
+class UmapPlotRequest(_ObsFilterMixin):
     color_json: str | list[str] = Field(
         default="[]",
-        description=(
-            "JSON array or comma-separated list of observation columns or gene names to color by. "
-            "Examples: '[\"author_cell_type\"]' or '[\"CD3E\",\"CD79A\"]'. "
-            "Leave empty to auto-color by the inferred cell type column."
-        ),
+        description="JSON array of obs columns or genes to color by; empty=auto.",
     )
-    use_raw: bool | None = Field(default=None, description="Use the raw attribute of adata for gene expression.")
-    layer: str = Field(default="", description="AnnData layer to use for coloring. Leave empty for X or raw.")
+    use_raw: bool | None = Field(default=None)
+    layer: str = Field(default="", description="Layer; empty=X.")
     gene_symbols: str = Field(
         default="",
-        description="Column in .var that contains gene symbols. Leave empty to use var_names index.",
+        description="var column with gene symbols; leave empty for auto.",
     )
     legend_loc: str = Field(
         default="right margin",
-        description="Legend position: 'right margin', 'on data', 'best', 'upper right', etc. Default: 'right margin'.",
+        description="Legend position.",
     )
-    legend_fontsize: float | None = Field(default=None, description="Legend font size in points. Auto-scaled when None.")
-    legend_fontweight: str = Field(default="bold", description="Legend font weight. Default: 'bold'.")
-    colorbar_loc: str = Field(default="right", description="Colorbar position for continuous color keys. Default: 'right'.")
+    legend_fontsize: float | None = Field(default=None, include_in_schema=False)
+    legend_fontweight: str = Field(default="bold", include_in_schema=False)
+    colorbar_loc: str = Field(default="right", include_in_schema=False)
     color_map: str = Field(
         default="",
-        description="Colormap for continuous variables (e.g. 'viridis', 'RdBu_r'). Leave empty for default.",
+        description="Colormap; empty=default.",
     )
     palette: str = Field(
         default="",
-        description="Color palette for categorical variables (e.g. 'tab20'). Leave empty for default.",
+        description="Palette; empty=default.",
     )
-    na_color: str = Field(default="lightgray", description="Color for cells with missing values. Default: 'lightgray'.")
-    na_in_legend: bool = Field(default=True, description="Include NA category in the legend.")
-    size: float | None = Field(
-        default=None,
-        description="Point size. Auto-calculated from cell count when None (120000 / n_cells).",
-    )
-    frameon: bool | None = Field(default=None, description="Show plot frame. Uses global settings when None.")
+    na_color: str = Field(default="lightgray", include_in_schema=False)
+    na_in_legend: bool = Field(default=True, include_in_schema=False)
+    size: float | None = Field(default=None, include_in_schema=False)
+    frameon: bool | None = Field(default=None, include_in_schema=False)
     vmin: str | None = Field(
         default=None,
-        description="Lower color scale limit. Supports percentile syntax e.g. 'p1.5'. Leave empty for auto.",
+        description="Lower color limit; percentile syntax e.g. 'p1.5'.",
     )
     vmax: str | None = Field(
         default=None,
-        description="Upper color scale limit. Supports percentile syntax e.g. 'p98'. Leave empty for auto.",
+        description="Upper color limit; percentile syntax e.g. 'p98'.",
     )
-    vcenter: float | None = Field(default=None, description="Center value for diverging colormaps.")
-    add_outline: bool = Field(default=False, description="Add a border outline around each group of dots.")
-    sort_order: bool = Field(default=True, description="Plot higher-value points on top of lower-value ones.")
-    edges: bool = Field(default=False, description="Overlay neighborhood graph edges on the embedding.")
-    edges_width: float = Field(default=0.1, description="Width of graph edges when edges=True.")
-    edges_color: str = Field(default="grey", description="Color of graph edges when edges=True.")
+    vcenter: float | None = Field(default=None, description="Diverging colormap center.")
+    add_outline: bool = Field(default=False, include_in_schema=False)
+    sort_order: bool = Field(default=True, include_in_schema=False)
+    edges: bool = Field(default=False, include_in_schema=False)
+    edges_width: float = Field(default=0.1, include_in_schema=False)
+    edges_color: str = Field(default="grey", include_in_schema=False)
     groups_json: str = Field(
         default="",
-        description="JSON array of category values to highlight; all others are greyed out (e.g. '[\"B cell\"]').",
+        description="JSON categories to highlight; others greyed out.",
     )
-    ncols: int = Field(default=4, description="Number of panels per row when multiple color keys are given.")
-    title: str = Field(default="", description="Optional plot title.")
+    ncols: int = Field(default=4, include_in_schema=False)
+    title: str = Field(default="")
 
 
-class TsnePlotRequest(BaseModel):
+class TsnePlotRequest(_ObsFilterMixin):
     color_json: str | list[str] = Field(
         default="[]",
-        description=(
-            "JSON array or comma-separated list of observation columns or gene names to color by. "
-            "Examples: '[\"author_cell_type\"]' or '[\"CD3E\",\"CD79A\"]'. "
-            "Leave empty to auto-color by the inferred cell type column."
-        ),
+        description="JSON array of obs columns or genes to color by; empty=auto.",
     )
-    use_raw: bool | None = Field(default=None, description="Use the raw attribute of adata for gene expression.")
-    layer: str = Field(default="", description="AnnData layer to use for coloring. Leave empty for X or raw.")
+    use_raw: bool | None = Field(default=None)
+    layer: str = Field(default="", description="Layer; empty=X.")
     gene_symbols: str = Field(
         default="",
-        description="Column in .var that contains gene symbols. Leave empty to use var_names index.",
+        description="var column with gene symbols; leave empty for auto.",
     )
     legend_loc: str = Field(
         default="right margin",
-        description="Legend position: 'right margin', 'on data', 'best', 'upper right', etc. Default: 'right margin'.",
+        description="Legend position.",
     )
-    legend_fontsize: float | None = Field(default=None, description="Legend font size in points. Auto-scaled when None.")
-    legend_fontweight: str = Field(default="bold", description="Legend font weight. Default: 'bold'.")
-    colorbar_loc: str = Field(default="right", description="Colorbar position. Default: 'right'.")
+    legend_fontsize: float | None = Field(default=None, include_in_schema=False)
+    legend_fontweight: str = Field(default="bold", include_in_schema=False)
+    colorbar_loc: str = Field(default="right", include_in_schema=False)
     color_map: str = Field(
         default="",
-        description="Colormap for continuous variables (e.g. 'viridis', 'RdBu_r'). Leave empty for default.",
+        description="Colormap; empty=default.",
     )
     palette: str = Field(
         default="",
-        description="Color palette for categorical variables (e.g. 'tab20'). Leave empty for default.",
+        description="Palette; empty=default.",
     )
-    na_color: str = Field(default="lightgray", description="Color for cells with missing values. Default: 'lightgray'.")
-    na_in_legend: bool = Field(default=True, description="Show NA category in the legend.")
-    size: float | None = Field(
-        default=None,
-        description="Point size. Auto-calculated from cell count when None (120000 / n_cells).",
-    )
-    frameon: bool | None = Field(default=None, description="Show plot frame. Uses global settings when None.")
+    na_color: str = Field(default="lightgray", include_in_schema=False)
+    na_in_legend: bool = Field(default=True, include_in_schema=False)
+    size: float | None = Field(default=None, include_in_schema=False)
+    frameon: bool | None = Field(default=None, include_in_schema=False)
     vmin: str | None = Field(
         default=None,
-        description="Lower color scale limit. Supports percentile syntax e.g. 'p1.5'. Leave empty for auto.",
+        description="Lower color limit; percentile syntax e.g. 'p1.5'.",
     )
     vmax: str | None = Field(
         default=None,
-        description="Upper color scale limit. Supports percentile syntax e.g. 'p98'. Leave empty for auto.",
+        description="Upper color limit; percentile syntax e.g. 'p98'.",
     )
-    vcenter: float | None = Field(default=None, description="Center value for diverging colormaps.")
-    add_outline: bool = Field(default=False, description="Add a border outline around each group of dots.")
-    sort_order: bool = Field(default=True, description="Plot higher-value points on top of lower-value ones.")
-    edges: bool = Field(default=False, description="Overlay neighborhood graph edges on the embedding.")
-    edges_width: float = Field(default=0.1, description="Width of graph edges when edges=True.")
-    edges_color: str = Field(default="grey", description="Color of graph edges when edges=True.")
+    vcenter: float | None = Field(default=None, description="Diverging colormap center.")
+    add_outline: bool = Field(default=False, include_in_schema=False)
+    sort_order: bool = Field(default=True, include_in_schema=False)
+    edges: bool = Field(default=False, include_in_schema=False)
+    edges_width: float = Field(default=0.1, include_in_schema=False)
+    edges_color: str = Field(default="grey", include_in_schema=False)
     groups_json: str = Field(
         default="",
-        description="JSON array of category values to highlight; all others are greyed out (e.g. '[\"B cell\"]').",
+        description="JSON categories to highlight; others greyed out.",
     )
-    ncols: int = Field(default=4, description="Number of panels per row when multiple color keys are given.")
-    title: str = Field(default="", description="Optional plot title.")
+    ncols: int = Field(default=4, include_in_schema=False)
+    title: str = Field(default="")
 
 
-class DendrogramRequest(BaseModel):
+class DendrogramRequest(_ObsFilterMixin):
     groupby: str = Field(
         default="author_cell_type",
-        description="Observation column to build the dendrogram from. Default: 'author_cell_type'.",
+        description="Groupby column.",
     )
     dendrogram_key: str = Field(
         default="",
-        description=(
-            "Key in adata.uns where the precomputed dendrogram is stored. "
-            "Defaults to 'dendrogram_{groupby}'. Leave empty to use the default."
-        ),
+        description="adata.uns dendrogram key; empty=default.",
     )
-    orientation: str = Field(
-        default="top",
-        description="Direction the tree grows from: 'top', 'bottom', 'left', or 'right'. Default: 'top'.",
-    )
-    remove_labels: bool = Field(
-        default=False,
-        description="Hide category labels on the dendrogram leaves.",
-    )
+    orientation: str = Field(default="top", include_in_schema=False)
+    remove_labels: bool = Field(default=False, include_in_schema=False)
     figsize_width: float | None = Field(
         default=None,
-        description="Figure width in inches. Auto-computed from category count when None.",
+        description="Width inches; auto-computed.",
     )
     figsize_height: float | None = Field(
         default=None,
-        description="Figure height in inches. Auto-computed from category count when None.",
+        description="Height inches; auto-computed.",
     )
-    title: str = Field(default="", description="Optional plot title.")
+    title: str = Field(default="")
 
 
-class ClustermapRequest(BaseModel):
+class ClustermapRequest(_ObsFilterMixin):
     markers_json: str | list[str] = Field(
         default="[]",
-        description=(
-            "JSON array or comma-separated list of genes to subset before clustering. "
-            "Strongly recommended — running on all genes is very slow for large datasets. "
-            "If empty, session markers set by set_markers are used. "
-            "If neither is provided, all genes in the dataset are used (may be slow)."
-        ),
+        description="JSON array or comma-separated genes. Empty=session markers.",
     )
     obs_keys: str = Field(
         default="",
-        description=(
-            "Optional observation column to color-code rows by (e.g. 'author_cell_type', 'disease'). "
-            "Only one key is supported. Leave empty for no row coloring."
-        ),
+        description="obs column for row colors; empty=none.",
     )
-    use_raw: bool | None = Field(default=None, description="Use the raw attribute of adata.")
+    use_raw: bool | None = Field(default=None)
     standard_scale: str = Field(
         default="",
-        description="Standardize values to [0,1] per 'row' or 'col' before clustering. Leave empty to skip.",
+        description="Normalize: 'row' or 'col'. Leave empty to skip.",
     )
-    z_score: int | None = Field(
-        default=None,
-        description="Compute z-score along rows (0) or columns (1) before clustering. Leave None to skip.",
-    )
-    method: str = Field(
-        default="average",
-        description="Linkage method for hierarchical clustering (e.g. 'average', 'complete', 'ward').",
-    )
-    metric: str = Field(
-        default="euclidean",
-        description="Distance metric for clustering (e.g. 'euclidean', 'correlation', 'cosine').",
-    )
-    cmap: str = Field(default="viridis", description="Colormap for the heatmap cells. Default: 'viridis'.")
-    figsize_width: float | None = Field(default=None, description="Figure width in inches.")
-    figsize_height: float | None = Field(default=None, description="Figure height in inches.")
-    title: str = Field(default="", description="Optional plot title.")
+    z_score: int | None = Field(default=None, include_in_schema=False)
+    method: str = Field(default="average", include_in_schema=False)
+    metric: str = Field(default="euclidean", include_in_schema=False)
+    cmap: str = Field(default="viridis", description="Colormap name.")
+    figsize_width: float | None = Field(default=None, description="Width inches.")
+    figsize_height: float | None = Field(default=None, description="Height inches.")
+    title: str = Field(default="")
 
 
-class MatrixplotRequest(BaseModel):
+class MatrixplotRequest(_ObsFilterMixin):
     markers_json: str | list[str] = Field(
         default="[]",
-        description=(
-            "JSON array or comma-separated list of genes to display in the matrix plot. "
-            "If empty, the session markers set by set_markers are used. "
-            "Example: '[\"C1QA\",\"PSAP\",\"CD79A\"]'."
-        ),
+        description="JSON array or comma-separated genes. Empty=session markers.",
     )
     groupby: str = Field(
         default="author_cell_type",
-        description="Observation column to group cells by. Default: 'author_cell_type'.",
+        description="Groupby column.",
     )
-    use_raw: bool | None = Field(default=None, description="Use the raw attribute of adata.")
-    log: bool = Field(default=False, description="Plot on a logarithmic scale.")
+    use_raw: bool | None = Field(default=None)
+    log: bool = Field(default=False, description="Log scale.")
     num_categories: int = Field(
         default=7,
-        description="Number of categories when groupby is continuous.",
+        description="Bins when groupby is continuous.",
     )
     categories_order_json: str = Field(
         default="",
-        description="JSON array specifying display order of groupby categories (e.g. '[\"B cell\",\"T cell\"]').",
+        description="JSON array: display order of categories.",
     )
     dendrogram: bool = Field(
         default=False,
-        description="Add a dendrogram based on hierarchical clustering of the groupby categories.",
+        description="Add hierarchical dendrogram.",
     )
     gene_symbols: str = Field(
         default="",
-        description="Column in .var that contains gene symbols. Leave empty to use var_names index.",
+        description="var column with gene symbols; leave empty for auto.",
     )
-    layer: str = Field(default="", description="AnnData layer to plot. Leave empty to use X or raw.")
+    layer: str = Field(default="", description="Layer; empty=X.")
     standard_scale: str = Field(
         default="",
-        description="Standardize values to [0,1] per 'var' (gene) or 'obs' (cell). Leave empty to skip.",
+        description="Normalize: 'var' or 'obs'. Leave empty to skip.",
     )
     swap_axes: bool = Field(
         default=False,
-        description="Swap axes: cell types on x-axis, genes on y-axis. Useful when there are many cell types.",
+        description="Swap axes (genes/groups).",
     )
-    cmap: str = Field(default="viridis", description="Colormap for cell fill color. Default: 'viridis'.")
-    vmin: float | None = Field(default=None, description="Lower color scale limit.")
-    vmax: float | None = Field(default=None, description="Upper color scale limit.")
-    vcenter: float | None = Field(
-        default=None, description="Center of the color scale (useful for diverging colormaps)."
-    )
-    colorbar_title: str = Field(
-        default="",
-        description="Title for the color bar. Defaults to 'Mean expression in group'.",
-    )
+    cmap: str = Field(default="viridis", description="Colormap name.")
+    vmin: float | None = Field(default=None)
+    vmax: float | None = Field(default=None)
+    vcenter: float | None = Field(default=None, description="Diverging colormap center.")
+    colorbar_title: str = Field(default="", include_in_schema=False)
     figsize_width: float | None = Field(
         default=None,
-        description="Figure width in inches. Auto-computed from gene/category count when None.",
+        description="Width inches; auto-computed.",
     )
     figsize_height: float | None = Field(
         default=None,
-        description="Figure height in inches. Auto-computed from gene/category count when None.",
+        description="Height inches; auto-computed.",
     )
-    title: str = Field(default="", description="Optional plot title.")
+    title: str = Field(default="")
 
 
-class StackedViolinRequest(BaseModel):
+class StackedViolinRequest(_ObsFilterMixin):
     markers_json: str | list[str] = Field(
         default="[]",
-        description=(
-            "JSON array or comma-separated list of genes to display in the stacked violin plot. "
-            "If empty, the session markers set by set_markers are used. "
-            "Example: '[\"C1QA\",\"PSAP\",\"CD79A\"]'."
-        ),
+        description="JSON array or comma-separated genes. Empty=session markers.",
     )
     groupby: str = Field(
         default="author_cell_type",
-        description="Observation column to group cells by. Default: 'author_cell_type'.",
+        description="Groupby column.",
     )
-    use_raw: bool | None = Field(default=None, description="Use the raw attribute of adata.")
-    log: bool = Field(default=False, description="Plot on a logarithmic scale.")
+    use_raw: bool | None = Field(default=None)
+    log: bool = Field(default=False, description="Log scale.")
     num_categories: int = Field(
         default=7,
-        description="Number of categories when groupby is continuous.",
+        description="Bins when groupby is continuous.",
     )
     dendrogram: bool = Field(
         default=False,
-        description="Add a dendrogram based on hierarchical clustering of the groupby categories.",
+        description="Add hierarchical dendrogram.",
     )
     gene_symbols: str = Field(
         default="",
-        description="Column in .var that contains gene symbols. Leave empty to use var_names index.",
+        description="var column with gene symbols; leave empty for auto.",
     )
-    layer: str = Field(default="", description="AnnData layer to plot. Leave empty to use X or raw.")
+    layer: str = Field(default="", description="Layer; empty=X.")
     standard_scale: str = Field(
         default="",
-        description="Standardize values to [0,1] per 'var' (gene) or 'obs' (cell). Leave empty to skip.",
+        description="Normalize: 'var' or 'obs'. Leave empty to skip.",
     )
     categories_order_json: str = Field(
         default="",
-        description="JSON array specifying display order of groupby categories (e.g. '[\"B cell\",\"T cell\"]').",
+        description="JSON array: display order of categories.",
     )
     swap_axes: bool = Field(
         default=False,
-        description="Swap axes: genes on x-axis, groups on y-axis. Useful when there are many groups.",
+        description="Swap axes (genes/groups).",
     )
-    vmin: float | None = Field(default=None, description="Lower color scale limit.")
-    vmax: float | None = Field(default=None, description="Upper color scale limit.")
-    vcenter: float | None = Field(
-        default=None, description="Center of the color scale (useful for diverging colormaps)."
-    )
-    cmap: str = Field(default="Blues", description="Colormap for violin fill color. Default: 'Blues'.")
-    stripplot: bool = Field(default=False, description="Overlay a strip plot (individual data points) on each violin.")
-    jitter: float | bool = Field(default=False, description="Add jitter to the strip plot.")
-    size: int = Field(default=1, description="Size of the jitter points.")
-    row_palette: str = Field(
-        default="",
-        description="Color palette for violin rows (e.g. 'tab20'). Leave empty to use cmap.",
-    )
-    yticklabels: bool = Field(default=False, description="Show y-axis tick labels on each violin row.")
-    colorbar_title: str = Field(
-        default="",
-        description="Title for the color bar. Defaults to 'Median expression in group'.",
-    )
+    vmin: float | None = Field(default=None)
+    vmax: float | None = Field(default=None)
+    vcenter: float | None = Field(default=None, description="Diverging colormap center.")
+    cmap: str = Field(default="Blues", description="Colormap name.")
+    stripplot: bool = Field(default=False, include_in_schema=False)
+    jitter: float | bool = Field(default=False, include_in_schema=False)
+    size: int = Field(default=1, include_in_schema=False)
+    row_palette: str = Field(default="", include_in_schema=False)
+    yticklabels: bool = Field(default=False, include_in_schema=False)
+    colorbar_title: str = Field(default="", include_in_schema=False)
     figsize_width: float | None = Field(
         default=None,
-        description="Figure width in inches. Auto-computed from gene/category count when None.",
+        description="Width inches; auto-computed.",
     )
     figsize_height: float | None = Field(
         default=None,
-        description="Figure height in inches. Auto-computed from gene/category count when None.",
+        description="Height inches; auto-computed.",
     )
-    title: str = Field(default="", description="Optional plot title.")
+    title: str = Field(default="")
 
 
-class TracksplotRequest(BaseModel):
+class TracksplotRequest(_ObsFilterMixin):
     markers_json: str | list[str] = Field(
         default="[]",
-        description=(
-            "JSON array or comma-separated list of genes to display in the tracks plot. "
-            "If empty, the session markers set by set_markers are used. "
-            "Example: '[\"C1QA\",\"PSAP\",\"CD79A\"]'."
-        ),
+        description="JSON array or comma-separated genes. Empty=session markers.",
     )
     groupby: str = Field(
         default="author_cell_type",
-        description="Observation column to group cells by. Default: 'author_cell_type'.",
+        description="Groupby column.",
     )
-    use_raw: bool | None = Field(default=None, description="Use the raw attribute of adata.")
-    log: bool = Field(default=False, description="Plot on a logarithmic scale.")
+    use_raw: bool | None = Field(default=None)
+    log: bool = Field(default=False, description="Log scale.")
     dendrogram: bool = Field(
         default=False,
-        description="Add a dendrogram based on hierarchical clustering of the groupby categories.",
+        description="Add hierarchical dendrogram.",
     )
     gene_symbols: str = Field(
         default="",
-        description="Column in .var that contains gene symbols. Leave empty to use var_names index.",
+        description="var column with gene symbols; leave empty for auto.",
     )
-    layer: str = Field(default="", description="AnnData layer to plot. Leave empty to use X or raw.")
+    layer: str = Field(default="", description="Layer; empty=X.")
     figsize_width: float | None = Field(
         default=None,
-        description="Figure width in inches. Auto-computed from gene/category count when None.",
+        description="Width inches; auto-computed.",
     )
     figsize_height: float | None = Field(
         default=None,
-        description="Figure height in inches. Auto-computed from gene/category count when None.",
+        description="Height inches; auto-computed.",
     )
-    title: str = Field(default="", description="Optional plot title.")
+    title: str = Field(default="")
+
+
+class ScatterPlotRequest(_ObsFilterMixin):
+    x: str = Field(
+        default="",
+        description="x-axis: obs column, gene, or empty if basis set.",
+    )
+    y: str = Field(
+        default="",
+        description="y-axis: obs column, gene, or empty if basis set.",
+    )
+    color_json: str = Field(
+        default="[]",
+        description="JSON array of obs columns or genes to color by.",
+    )
+    basis: str = Field(
+        default="",
+        description="Embedding name; when set, x/y from embedding coords.",
+    )
+    use_raw: bool | None = Field(
+        default=None,
+        description="Use adata.raw; default False.",
+    )
+    layer: str = Field(
+        default="",
+        description="Layer; empty=X.",
+    )
+    groups_json: str = Field(
+        default="[]",
+        description="JSON categories to restrict coloring to.",
+    )
+    components: str = Field(
+        default="",
+        description="Components e.g. '1,2'; only if basis is set.",
+    )
+    sort_order: bool = Field(default=True, include_in_schema=False)
+    legend_loc: str = Field(
+        default="right margin",
+        description="Legend position.",
+    )
+    size: float | None = Field(default=None, include_in_schema=False)
+    color_map: str = Field(
+        default="",
+        description="Colormap; empty=default.",
+    )
+    frameon: bool | None = Field(default=None, include_in_schema=False)
+    title: str = Field(default="")
+    figsize_width: float | None = Field(
+        default=None,
+        description="Width inches; auto-computed.",
+    )
+    figsize_height: float | None = Field(
+        default=None,
+        description="Height inches; auto-computed.",
+    )
+
+
+class HighestExprGenesRequest(_ObsFilterMixin):
+    n_top: int = Field(
+        default=30,
+        description="Number of top genes.",
+    )
+    layer: str = Field(
+        default="",
+        description="Layer; empty=X.",
+    )
+    gene_symbols: str = Field(
+        default="",
+        description="var column with gene symbols; leave empty for auto.",
+    )
+    log: bool = Field(default=False)
+    title: str = Field(default="")
 
 
 class ExecuteDatasetCommandRequest(BaseModel):
     command: str = Field(
         default="print(adata.obs)",
-        description="Observation inspection command. Supported value: `print(adata.obs)`.",
+        description="Command; supported: 'print(adata.obs)'.",
     )
+
+
+class ObsCountTableRequest(_ObsFilterMixin):
+    row_col: str = Field(
+        description="obs column to use as rows (e.g. 'author_cell_type').",
+    )
+    col_col: str = Field(
+        description="obs column to use as columns / second groupby key (e.g. 'sample').",
+    )
+
+
+class SpatialScatterRequest(_ObsFilterMixin):
+    color_json: str | list[str] = Field(
+        default="[]",
+        description="JSON array of obs columns or gene names/ENS IDs to color by; [] for auto cell type.",
+    )
+    figsize_width: float | None = Field(default=None, description="Width inches; auto-computed.")
+    figsize_height: float | None = Field(default=None, description="Height inches; auto-computed.")
+    title: str = Field(default="")
+    # Layout
+    wspace: float | None = Field(default=None, description="Width space between panels (e.g. 0.1).")
+    hspace: float | None = Field(default=None, description="Height space between panels.")
+    ncols: int | None = Field(default=None, description="Number of panels per row.")
+    # Shape / size
+    shape: str | None = Field(default=None, description="Point shape: 'circle', 'square', or 'hex'.")
+    size: float | None = Field(default=None, description="Size of the scatter point/shape.")
+    alpha: float | None = Field(default=None, description="Alpha (opacity) for scatter points.")
+    # Color / style
+    cmap: str | None = Field(default=None, description="Colormap for continuous annotations (e.g. 'viridis').")
+    palette: str | None = Field(default=None, description="Palette for discrete annotations.")
+    na_color: str | None = Field(default=None, description="Color for NA values.")
+    # Image
+    img: bool | None = Field(default=None, description="Whether to plot the tissue image overlay.")
+    img_alpha: float | None = Field(default=None, description="Alpha for the underlying tissue image.")
+    # Crop
+    crop_coord: list[int] | None = Field(default=None, description="[left, right, top, bottom] crop in pixel space.")
+    # Legend / colorbar
+    legend_loc: str | None = Field(default=None, description="Legend location (e.g. 'right margin', 'on data').")
+    legend_fontsize: float | None = Field(default=None, description="Legend font size.")
+    colorbar: bool | None = Field(default=None, description="Whether to show the colorbar.")
+    frameon: bool | None = Field(default=None, description="Whether to draw a frame around panels.")
+    # Outline
+    outline: bool | None = Field(default=None, description="Whether to draw a thin border around points.")
+    # Groups
+    groups_json: str = Field(default="[]", description="JSON array of group values to show (others shown as NA).")
+    # Layer
+    layer: str | None = Field(default=None, description="adata.layers key to use instead of X.")
+    use_raw: bool | None = Field(default=None, description="Whether to use adata.raw.")
+
+
+class ObsUniqueValuesRequest(BaseModel):
+    column: str = Field(
+        default="",
+        description="adata.obs column name to get unique values for. Leave empty to list all categorical columns.",
+    )
+
+
+class NhoodEnrichmentRequest(_ObsFilterMixin):
+    cluster_key: str = Field(
+        default="",
+        description="adata.obs column for cluster labels; empty=auto cell type column.",
+    )
+    mode: str = Field(
+        default="zscore",
+        description="Enrichment mode: 'zscore' or 'count'.",
+    )
+    figsize_width: float | None = Field(
+        default=None,
+        description="Width inches; auto-computed from number of clusters.",
+    )
+    figsize_height: float | None = Field(
+        default=None,
+        description="Height inches; auto-computed from number of clusters.",
+    )
+    title: str = Field(default="")
 
 
 def _settings():
@@ -1311,6 +1225,67 @@ def _parse_string_list(value: str | list[str]) -> list[str]:
     if isinstance(parsed, list):
         return [str(item).strip() for item in parsed if str(item).strip()]
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _apply_obs_filter(adata: ad.AnnData, obs_filter_json: str) -> ad.AnnData:
+    """Return a view of adata restricted to cells matching obs_filter for a single plot.
+
+    Returns the original adata unchanged when obs_filter_json is empty/null.
+    Raises ValueError with a descriptive message when a column or value is not found.
+    Column names and values are matched case-insensitively.
+    The view is temporary — the active dataset in RUNTIME_STATE is never modified.
+    """
+    raw = str(obs_filter_json or "").strip()
+    if not raw or raw in ("{}", "null", "none", ""):
+        return adata
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        raise ValueError(f"obs_filter_json is not valid JSON: {raw!r}")
+    if not isinstance(parsed, dict):
+        raise ValueError(
+            "obs_filter_json must be a JSON object, e.g. "
+            '{\"author_cell_type\": [\"B cells\", \"T cells\"]}'
+        )
+    if not parsed:
+        return adata
+
+    lower_to_col = {str(c).lower(): str(c) for c in adata.obs.columns}
+    mask = pd.Series([True] * adata.n_obs, index=adata.obs.index)
+
+    for requested_col, values in parsed.items():
+        col = lower_to_col.get(str(requested_col).strip().lower())
+        if col is None:
+            available = ", ".join(str(c) for c in list(adata.obs.columns)[:30])
+            raise ValueError(
+                f"obs_filter column '{requested_col}' not found in adata.obs. "
+                f"Available columns: {available}"
+            )
+        if isinstance(values, str):
+            values = [values]
+        if not isinstance(values, list):
+            raise ValueError(
+                f"obs_filter values for '{requested_col}' must be a list of strings, "
+                f"e.g. [\"B cells\", \"T cells\"]."
+            )
+        str_values = {str(v).strip().lower() for v in values if str(v).strip()}
+        series_lower = adata.obs[col].astype(str).str.strip().str.lower()
+        col_mask = series_lower.isin(str_values)
+        if not col_mask.any():
+            available_vals = adata.obs[col].astype(str).unique().tolist()[:20]
+            raise ValueError(
+                f"obs_filter: no cells match '{col}' in {list(values)}. "
+                f"Available values (up to 20): {available_vals}"
+            )
+        mask = mask & col_mask
+
+    if not mask.any():
+        raise ValueError(
+            "obs_filter resulted in 0 cells after applying all filters. "
+            "Check that your filter combinations are not mutually exclusive."
+        )
+
+    return adata[mask.values]
 
 
 def _build_plot_request(payload: GeneratePlotRequest) -> PlotRequest:
@@ -1403,13 +1378,8 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
         "/generate_scanpy_plot",
         dependencies=[Depends(_require_api_key)],
         operation_id="generate_scanpy_plot",
-        summary="Generate a Scanpy plot for the currently loaded GenoPixel dataset",
-        description=(
-            "Use this tool whenever the user asks for a plot or visualization of the dataset that was already "
-            "loaded from the GenoPixel browser. Do not ask for file paths. For a plain UMAP request, call this "
-            "tool with plot_type='umap', color_json='[]', and genes_json='[]' unless the user asked for a "
-            "specific coloring field or gene."
-        ),
+        summary="Generate a Scanpy plot",
+        description="Plot the loaded dataset. For plain UMAP: plot_type='umap', color_json='[]', genes_json='[]'.",
     )
     async def generate_scanpy_plot(payload: GeneratePlotRequest) -> dict[str, Any]:
         try:
@@ -1420,6 +1390,10 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
                 "status": "no_active_dataset",
                 "message": str(exc),
             }
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
 
         plot_request = _build_plot_request(payload)
         plotter = _plotter()
@@ -1441,58 +1415,41 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
         output_markdown = _output_markdown(output_file, output_url)
         plot_payload: dict[str, Any] = {
             "plot_type": result.plot_type,
-            "embedding_basis": result.embedding_basis,
-            "color_columns": result.color_columns,
             "resolved_genes": result.resolved_genes,
             "resolved_groupby": result.resolved_groupby,
             "resolved_coloring_label": result.resolved_coloring_label,
-            "display_plot_type": result.display_plot_type,
             "rank_genes_groups_computed": result.rank_genes_groups_computed,
             "rank_genes_groups_notice": result.rank_genes_groups_notice,
-            "output_file": output_file,
-            "output_markdown": output_markdown,
         }
         if output_url:
             plot_payload["output_url"] = output_url
 
         canonical_response_markdown = build_canonical_response_markdown(active, plot_payload, output_markdown)
-        plain_umap_markdown = None
-        if _is_plain_umap_request(payload, plot_request):
-            plain_umap_markdown = canonical_response_markdown
 
         return {
             "ok": True,
             "status": "success",
             "active_dataset": active,
             "plot": plot_payload,
-            "output_file": output_file,
-            "output_markdown": output_markdown,
-            "inline_markdown": output_markdown,
-            "output_url": output_url,
-            "canonical_response_markdown": canonical_response_markdown,
-            "plain_umap_response_markdown": plain_umap_markdown,
-            "rank_genes_groups_computed": result.rank_genes_groups_computed,
-            "rank_genes_groups_notice": result.rank_genes_groups_notice,
+            "inline_markdown": canonical_response_markdown or output_markdown,
         }
 
     @app.post(
         "/generate_heatmap_plot",
         dependencies=[Depends(_require_api_key)],
         operation_id="generate_heatmap_plot",
-        summary="Generate a customizable heatmap for the active dataset",
-        description=(
-            "Plot gene expression as a heatmap grouped by any observation column. "
-            "Genes are taken from markers_json; if empty, session markers set by set_markers are used. "
-            "If neither is provided, the tool returns an error asking for genes. "
-            "groupby defaults to 'author_cell_type'. "
-            "All scanpy.pl.heatmap parameters are exposed."
-        ),
+        summary="Heatmap plot",
+        description="Heatmap grouped by obs column. Genes from markers_json or session markers.",
     )
     async def generate_heatmap_plot(payload: HeatmapPlotRequest) -> dict[str, Any]:
         try:
             adata, active = RUNTIME_STATE.require_active_adata()
         except NoActiveDatasetError as exc:
             return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
 
         var_names = _parse_string_list(payload.markers_json)
         plotter = _plotter()
@@ -1556,13 +1513,8 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             "active_dataset": active,
             "var_names_used": result.resolved_genes,
             "groupby_used": result.resolved_groupby,
-            "output_file": output_file,
-            "output_markdown": output_markdown,
-            "inline_markdown": output_markdown,
-            "canonical_response_markdown": canonical_response_markdown,
+            "inline_markdown": canonical_response_markdown or output_markdown,
         }
-        if output_url:
-            response["output_url"] = output_url
         return response
 
     @app.post(
@@ -1570,13 +1522,7 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
         dependencies=[Depends(_require_api_key)],
         operation_id="set_markers",
         summary="Set a session-level gene marker list",
-        description=(
-            "Store a list of genes as the session default 'markers'. "
-            "Once set, any tool that accepts genes (violin, dotplot, matrixplot, heatmap) "
-            "will automatically use these markers when no genes are explicitly specified. "
-            "Example: markers = ['C1QA', 'PSAP', 'CD79A', 'CD79B', 'CST3', 'LYZ']. "
-            "Call this once at the start of a session to avoid repeating the gene list."
-        ),
+        description="Store genes as session default markers for all gene-based tools.",
     )
     async def set_markers(payload: SetMarkersRequest) -> dict[str, Any]:
         markers = _parse_string_list(payload.markers_json)
@@ -1609,22 +1555,56 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
         }
 
     @app.post(
+        "/log_unmet_request",
+        dependencies=[Depends(_require_api_key)],
+        operation_id="log_unmet_request",
+        summary="Log an unmet user request",
+        description=(
+            "Call this when the user asks for an analysis or plot that no available GenoPixel tool can fulfill. "
+            "Appends the request to a log file for developer review and future feature planning."
+        ),
+    )
+    async def log_unmet_request(payload: LogUnmetRequestRequest) -> dict[str, Any]:
+        import datetime
+
+        record = {
+            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "user_request": str(payload.user_request or "").strip(),
+            "active_dataset": str(payload.active_dataset or "").strip(),
+        }
+        try:
+            log_path = Path(_settings().output_dir).parent / "unmet_requests.jsonl"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            return {
+                "ok": True,
+                "status": "logged",
+                "message": "Your request has been noted and sent to the developers for consideration.",
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "log_error",
+                "message": str(exc),
+            }
+
+    @app.post(
         "/generate_violin_plot",
         dependencies=[Depends(_require_api_key)],
         operation_id="generate_violin_plot",
-        summary="Generate a customizable violin plot for the active dataset",
-        description=(
-            "Plot gene expression or obs values as violins grouped by any observation column. "
-            "Exposes all scanpy.pl.violin parameters. "
-            "groupby defaults to 'author_cell_type'. rotation defaults to 45 degrees. "
-            "Use print_adata_obs to discover available obs columns."
-        ),
+        summary="Violin plot",
+        description="Violin plot grouped by obs column.",
     )
     async def generate_violin_plot(payload: ViolinPlotRequest) -> dict[str, Any]:
         try:
             adata, active = RUNTIME_STATE.require_active_adata()
         except NoActiveDatasetError as exc:
             return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
 
         keys = _parse_string_list(payload.keys_json)
         # Fall back to session markers if no keys provided
@@ -1685,26 +1665,16 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             "active_dataset": active,
             "resolved_genes": result.resolved_genes,
             "resolved_groupby": result.resolved_groupby,
-            "output_file": output_file,
-            "output_markdown": output_markdown,
-            "inline_markdown": output_markdown,
-            "canonical_response_markdown": canonical_response_markdown,
+            "inline_markdown": canonical_response_markdown or output_markdown,
         }
-        if output_url:
-            response["output_url"] = output_url
         return response
 
     @app.post(
         "/cell_counts_barplot",
         dependencies=[Depends(_require_api_key)],
         operation_id="cell_counts_barplot",
-        summary="Plot cell counts for a categorical observation column",
-        description=(
-            "Count cells by any adata.obs column (e.g. 'author_cell_type', 'disease', 'tissue', 'donor_id') "
-            "and generate a bar plot sorted from most to fewest cells. "
-            "Figure size adapts automatically to the number of categories and label length. "
-            "Use print_adata_obs first to see which columns are available."
-        ),
+        summary="Cell counts bar plot",
+        description="Bar plot of cell counts by obs column, sorted descending.",
     )
     async def cell_counts_barplot(payload: CellCountsBarplotRequest) -> dict[str, Any]:
         try:
@@ -1715,6 +1685,10 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
                 "status": "no_active_dataset",
                 "message": str(exc),
             }
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
 
         from gp_models import PlotRequest as _PlotRequest
         plot_request = _PlotRequest(
@@ -1751,35 +1725,88 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             "status": "success",
             "active_dataset": active,
             "groupby": result.resolved_groupby,
-            "output_file": output_file,
-            "output_markdown": output_markdown,
-            "inline_markdown": output_markdown,
-            "canonical_response_markdown": canonical_response_markdown,
+            "inline_markdown": canonical_response_markdown or output_markdown,
         }
-        if output_url:
-            response["output_url"] = output_url
+        return response
+
+    @app.post(
+        "/cell_type_proportion_barplot",
+        dependencies=[Depends(_require_api_key)],
+        operation_id="cell_type_proportion_barplot",
+        summary="Cell type proportion bar plot",
+        description="Stacked bar plot of cell type proportions per sample.",
+    )
+    async def cell_type_proportion_barplot(payload: CellTypeProportionBarplotRequest) -> dict[str, Any]:
+        try:
+            adata, active = RUNTIME_STATE.require_active_adata()
+        except NoActiveDatasetError as exc:
+            return {
+                "ok": False,
+                "status": "no_active_dataset",
+                "message": str(exc),
+            }
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
+
+        from gp_models import PlotRequest as _PlotRequest
+        sample_col = str(payload.sample_col or "").strip()
+        plot_request = _PlotRequest(
+            plot_type="cell_type_proportion_barplot",
+            groupby=str(payload.groupby or "").strip() or None,
+            color=[sample_col] if sample_col else [],
+            title=str(payload.title or "").strip() or None,
+        )
+        plotter = _plotter()
+        sync_active_dataset = getattr(plotter, "sync_active_dataset", None)
+        if callable(sync_active_dataset):
+            sync_active_dataset(active, adata)
+
+        try:
+            result = plotter.run(adata, plot_request)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "plot_error",
+                "message": str(exc),
+                "active_dataset": active,
+            }
+
+        output_file = str(result.output_file.resolve())
+        output_url = _public_assets_url(output_file)
+        output_markdown = _output_markdown(output_file, output_url)
+        canonical_response_markdown = build_canonical_response_markdown(active, {
+            "plot_type": result.plot_type,
+            "display_plot_type": result.display_plot_type,
+            "resolved_groupby": result.resolved_groupby,
+        }, output_markdown)
+
+        response: dict[str, Any] = {
+            "ok": True,
+            "status": "success",
+            "active_dataset": active,
+            "groupby": result.resolved_groupby,
+            "inline_markdown": canonical_response_markdown or output_markdown,
+        }
         return response
 
     @app.post(
         "/generate_dotplot_plot",
         dependencies=[Depends(_require_api_key)],
         operation_id="generate_dotplot_plot",
-        summary="Generate a customizable dot plot for the active dataset",
-        description=(
-            "Plot gene expression as a dot plot grouped by any observation column. "
-            "Dot size encodes the fraction of cells expressing the gene; "
-            "dot color encodes mean expression. "
-            "Genes are taken from markers_json; if empty, session markers set by set_markers are used. "
-            "If neither is provided, the tool returns an error asking for genes. "
-            "groupby defaults to 'author_cell_type'. "
-            "All scanpy.pl.dotplot parameters are exposed."
-        ),
+        summary="Dot plot",
+        description="Dot plot: dot size=fraction expressing, color=mean expression. Genes from markers_json or session markers.",
     )
     async def generate_dotplot_plot(payload: DotplotPlotRequest) -> dict[str, Any]:
         try:
             adata, active = RUNTIME_STATE.require_active_adata()
         except NoActiveDatasetError as exc:
             return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
 
         var_names = _parse_string_list(payload.markers_json)
         plotter = _plotter()
@@ -1852,34 +1879,76 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             "active_dataset": active,
             "var_names_used": result.resolved_genes,
             "groupby_used": result.resolved_groupby,
-            "output_file": output_file,
-            "output_markdown": output_markdown,
-            "inline_markdown": output_markdown,
-            "canonical_response_markdown": canonical_response_markdown,
+            "inline_markdown": canonical_response_markdown or output_markdown,
         }
-        if output_url:
-            response["output_url"] = output_url
+        return response
+
+    @app.post(
+        "/check_rank_genes_groups",
+        dependencies=[Depends(_require_api_key)],
+        operation_id="check_rank_genes_groups",
+        summary="Rank genes groups plot",
+        description="Check if rank_genes_groups results exist and plot them if so.",
+    )
+    async def check_rank_genes_groups() -> dict[str, Any]:
+        try:
+            adata, active = RUNTIME_STATE.require_active_adata()
+        except NoActiveDatasetError as exc:
+            return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+
+        rgg = adata.uns.get("rank_genes_groups")
+        if not isinstance(rgg, dict) or "names" not in rgg:
+            return {
+                "ok": False,
+                "status": "not_available",
+                "message": "rank_genes_groups results are not available in the active dataset.",
+                "active_dataset": active,
+            }
+
+        plotter = _plotter()
+        sync_active_dataset = getattr(plotter, "sync_active_dataset", None)
+        if callable(sync_active_dataset):
+            sync_active_dataset(active, adata)
+
+        try:
+            result = plotter.run_rank_genes_groups(adata, n_genes=5)
+        except Exception as exc:
+            return {"ok": False, "status": "plot_error", "message": str(exc), "active_dataset": active}
+
+        output_file = str(result.output_file.resolve())
+        output_url = _public_assets_url(output_file)
+        output_markdown = _output_markdown(output_file, output_url)
+        canonical_response_markdown = build_canonical_response_markdown(active, {
+            "plot_type": result.plot_type,
+            "display_plot_type": result.display_plot_type,
+            "resolved_groupby": result.resolved_groupby,
+        }, output_markdown)
+
+        response: dict[str, Any] = {
+            "ok": True,
+            "status": "available",
+            "active_dataset": active,
+            "groupby_used": result.resolved_groupby,
+            "inline_markdown": canonical_response_markdown or output_markdown,
+        }
         return response
 
     @app.post(
         "/generate_rank_genes_groups_violin",
         dependencies=[Depends(_require_api_key)],
         operation_id="generate_rank_genes_groups_violin",
-        summary="Plot ranked marker genes as violins from precomputed sc.tl.rank_genes_groups results",
-        description=(
-            "Plot expression distributions of top-ranked genes per group as violin plots. "
-            "With split=True (default), each violin is split to compare expression in the target group vs all others. "
-            "This tool does NOT auto-compute rank_genes_groups — if results are missing it returns "
-            "'no_rank_genes_groups' with instructions. "
-            "Use gene_names_json to override ranked genes with a specific list. "
-            "All scanpy.pl.rank_genes_groups_violin parameters are exposed."
-        ),
+        summary="Rank genes violin",
+        description="Violins of top-ranked genes per group. Requires precomputed rank_genes_groups.",
     )
     async def generate_rank_genes_groups_violin(payload: RankGenesGroupsViolinRequest) -> dict[str, Any]:
         try:
             adata, active = RUNTIME_STATE.require_active_adata()
         except NoActiveDatasetError as exc:
             return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
 
         plotter = _plotter()
         sync_active_dataset = getattr(plotter, "sync_active_dataset", None)
@@ -1926,34 +1995,26 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             "status": "success",
             "active_dataset": active,
             "groupby_used": result.resolved_groupby,
-            "output_file": output_file,
-            "output_markdown": output_markdown,
-            "inline_markdown": output_markdown,
-            "canonical_response_markdown": canonical_response_markdown,
+            "inline_markdown": canonical_response_markdown or output_markdown,
         }
-        if output_url:
-            response["output_url"] = output_url
         return response
 
     @app.post(
         "/generate_rank_genes_groups_plot",
         dependencies=[Depends(_require_api_key)],
         operation_id="generate_rank_genes_groups_plot",
-        summary="Plot ranked marker genes per group from precomputed sc.tl.rank_genes_groups results",
-        description=(
-            "Plot the top-ranked genes for each group as computed by sc.tl.rank_genes_groups. "
-            "Each panel shows score vs. gene for one group. "
-            "This tool does NOT auto-compute rank_genes_groups — if results are not present in adata.uns "
-            "it returns a 'no_rank_genes_groups' error with instructions on how to compute them. "
-            "Use groups_json to restrict to specific groups. "
-            "All scanpy.pl.rank_genes_groups parameters are exposed."
-        ),
+        summary="Rank genes groups",
+        description="Score panels per group for top-ranked genes. Requires precomputed rank_genes_groups.",
     )
     async def generate_rank_genes_groups_plot(payload: RankGenesGroupsPlotRequest) -> dict[str, Any]:
         try:
             adata, active = RUNTIME_STATE.require_active_adata()
         except NoActiveDatasetError as exc:
             return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
 
         plotter = _plotter()
         sync_active_dataset = getattr(plotter, "sync_active_dataset", None)
@@ -1995,27 +2056,16 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             "status": "success",
             "active_dataset": active,
             "groupby_used": result.resolved_groupby,
-            "output_file": output_file,
-            "output_markdown": output_markdown,
-            "inline_markdown": output_markdown,
-            "canonical_response_markdown": canonical_response_markdown,
+            "inline_markdown": canonical_response_markdown or output_markdown,
         }
-        if output_url:
-            response["output_url"] = output_url
         return response
 
     @app.post(
         "/generate_rank_genes_groups_dotplot_plot",
         dependencies=[Depends(_require_api_key)],
         operation_id="generate_rank_genes_groups_dotplot_plot",
-        summary="Plot ranked marker genes as a customizable dot plot",
-        description=(
-            "Render sc.pl.rank_genes_groups_dotplot for the active dataset. "
-            "Requires precomputed sc.tl.rank_genes_groups results in adata.uns. "
-            "Exposes all scanpy.pl.rank_genes_groups_dotplot parameters including "
-            "n_genes, groups, values_to_plot, standard_scale, dendrogram, swap_axes, "
-            "cmap, dot_max/dot_min, vmin/vmax/vcenter, and figsize."
-        ),
+        summary="Rank genes dot plot",
+        description="Dot plot of top-ranked genes. Requires precomputed rank_genes_groups.",
     )
     async def generate_rank_genes_groups_dotplot_plot(
         payload: RankGenesGroupsDotplotRequest,
@@ -2024,6 +2074,10 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             adata, active = RUNTIME_STATE.require_active_adata()
         except NoActiveDatasetError as exc:
             return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
 
         plotter = _plotter()
         sync_active_dataset = getattr(plotter, "sync_active_dataset", None)
@@ -2078,26 +2132,16 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             "status": "success",
             "active_dataset": active,
             "groupby_used": result.resolved_groupby,
-            "output_file": output_file,
-            "output_markdown": output_markdown,
-            "inline_markdown": output_markdown,
-            "canonical_response_markdown": canonical_response_markdown,
+            "inline_markdown": canonical_response_markdown or output_markdown,
         }
-        if output_url:
-            response["output_url"] = output_url
         return response
 
     @app.post(
         "/generate_rank_genes_groups_tracksplot_plot",
         dependencies=[Depends(_require_api_key)],
         operation_id="generate_rank_genes_groups_tracksplot_plot",
-        summary="Plot ranked marker genes as a customizable tracks plot",
-        description=(
-            "Render sc.pl.rank_genes_groups_tracksplot for the active dataset. "
-            "Requires precomputed sc.tl.rank_genes_groups results in adata.uns. "
-            "Exposes all scanpy.pl.rank_genes_groups_tracksplot parameters including "
-            "n_genes, groups, dendrogram, use_raw, log, layer, and figsize."
-        ),
+        summary="Rank genes tracks plot",
+        description="Tracks plot of top-ranked genes. Requires precomputed rank_genes_groups.",
     )
     async def generate_rank_genes_groups_tracksplot_plot(
         payload: RankGenesGroupsTracksplotRequest,
@@ -2106,6 +2150,10 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             adata, active = RUNTIME_STATE.require_active_adata()
         except NoActiveDatasetError as exc:
             return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
 
         plotter = _plotter()
         sync_active_dataset = getattr(plotter, "sync_active_dataset", None)
@@ -2154,26 +2202,16 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             "status": "success",
             "active_dataset": active,
             "groupby_used": result.resolved_groupby,
-            "output_file": output_file,
-            "output_markdown": output_markdown,
-            "inline_markdown": output_markdown,
-            "canonical_response_markdown": canonical_response_markdown,
+            "inline_markdown": canonical_response_markdown or output_markdown,
         }
-        if output_url:
-            response["output_url"] = output_url
         return response
 
     @app.post(
         "/generate_correlation_matrix_plot",
         dependencies=[Depends(_require_api_key)],
         operation_id="generate_correlation_matrix_plot",
-        summary="Plot a correlation matrix between cell groups for the active dataset",
-        description=(
-            "Render sc.pl.correlation_matrix for the active dataset. "
-            "Computes and displays pairwise correlations between groups defined by groupby. "
-            "Exposes all scanpy.pl.correlation_matrix parameters including "
-            "show_correlation_numbers, dendrogram, cmap, vmin/vmax/vcenter, and figsize."
-        ),
+        summary="Correlation matrix",
+        description="Pairwise correlation matrix between groupby categories.",
     )
     async def generate_correlation_matrix_plot(
         payload: CorrelationMatrixRequest,
@@ -2182,6 +2220,10 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             adata, active = RUNTIME_STATE.require_active_adata()
         except NoActiveDatasetError as exc:
             return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
 
         plotter = _plotter()
         sync_active_dataset = getattr(plotter, "sync_active_dataset", None)
@@ -2224,27 +2266,16 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             "status": "success",
             "active_dataset": active,
             "groupby_used": result.resolved_groupby,
-            "output_file": output_file,
-            "output_markdown": output_markdown,
-            "inline_markdown": output_markdown,
-            "canonical_response_markdown": canonical_response_markdown,
+            "inline_markdown": canonical_response_markdown or output_markdown,
         }
-        if output_url:
-            response["output_url"] = output_url
         return response
 
     @app.post(
         "/generate_rank_genes_groups_matrixplot_plot",
         dependencies=[Depends(_require_api_key)],
         operation_id="generate_rank_genes_groups_matrixplot_plot",
-        summary="Plot ranked marker genes as a customizable matrix plot",
-        description=(
-            "Render sc.pl.rank_genes_groups_matrixplot for the active dataset. "
-            "Requires precomputed sc.tl.rank_genes_groups results in adata.uns. "
-            "Exposes all scanpy.pl.rank_genes_groups_matrixplot parameters including "
-            "n_genes, groups, values_to_plot, standard_scale, dendrogram, swap_axes, "
-            "cmap, colorbar_title, vmin/vmax/vcenter, and figsize."
-        ),
+        summary="Rank genes matrix plot",
+        description="Matrix plot of top-ranked genes. Requires precomputed rank_genes_groups.",
     )
     async def generate_rank_genes_groups_matrixplot_plot(
         payload: RankGenesGroupsMatrixplotRequest,
@@ -2253,6 +2284,10 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             adata, active = RUNTIME_STATE.require_active_adata()
         except NoActiveDatasetError as exc:
             return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
 
         plotter = _plotter()
         sync_active_dataset = getattr(plotter, "sync_active_dataset", None)
@@ -2306,26 +2341,16 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             "status": "success",
             "active_dataset": active,
             "groupby_used": result.resolved_groupby,
-            "output_file": output_file,
-            "output_markdown": output_markdown,
-            "inline_markdown": output_markdown,
-            "canonical_response_markdown": canonical_response_markdown,
+            "inline_markdown": canonical_response_markdown or output_markdown,
         }
-        if output_url:
-            response["output_url"] = output_url
         return response
 
     @app.post(
         "/generate_rank_genes_groups_heatmap_plot",
         dependencies=[Depends(_require_api_key)],
         operation_id="generate_rank_genes_groups_heatmap_plot",
-        summary="Plot ranked marker genes as a customizable heatmap",
-        description=(
-            "Render sc.pl.rank_genes_groups_heatmap for the active dataset. "
-            "Requires precomputed sc.tl.rank_genes_groups results in adata.uns. "
-            "Exposes all scanpy.pl.rank_genes_groups_heatmap parameters including "
-            "n_genes, groups, standard_scale, swap_axes, show_gene_labels, cmap, vmin/vmax/vcenter, and figsize."
-        ),
+        summary="Rank genes heatmap",
+        description="Heatmap of top-ranked genes. Requires precomputed rank_genes_groups.",
     )
     async def generate_rank_genes_groups_heatmap_plot(
         payload: RankGenesGroupsHeatmapRequest,
@@ -2334,6 +2359,10 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             adata, active = RUNTIME_STATE.require_active_adata()
         except NoActiveDatasetError as exc:
             return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
 
         plotter = _plotter()
         sync_active_dataset = getattr(plotter, "sync_active_dataset", None)
@@ -2385,33 +2414,26 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             "status": "success",
             "active_dataset": active,
             "groupby_used": result.resolved_groupby,
-            "output_file": output_file,
-            "output_markdown": output_markdown,
-            "inline_markdown": output_markdown,
-            "canonical_response_markdown": canonical_response_markdown,
+            "inline_markdown": canonical_response_markdown or output_markdown,
         }
-        if output_url:
-            response["output_url"] = output_url
         return response
 
     @app.post(
         "/generate_embedding_plot",
         dependencies=[Depends(_require_api_key)],
         operation_id="generate_embedding_plot",
-        summary="Generate a plot for any named embedding in the active dataset",
-        description=(
-            "Generic embedding plotter — the user specifies the basis name (e.g. 'umap', 'tsne', 'pca', 'diffmap', 'draw_graph_fa'). "
-            "Use this when the user asks for an embedding that is not UMAP, tSNE, or diffmap, "
-            "or when they want to specify the exact basis by name. "
-            "If the requested basis does not exist in adata.obsm, the tool returns an error listing available embeddings. "
-            "All scanpy.pl.embedding parameters are exposed."
-        ),
+        summary="Embedding plot",
+        description="Generic embedding scatter plot; specify basis name (e.g. 'pca', 'draw_graph_fa').",
     )
     async def generate_embedding_plot(payload: EmbeddingPlotRequest) -> dict[str, Any]:
         try:
             adata, active = RUNTIME_STATE.require_active_adata()
         except NoActiveDatasetError as exc:
             return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
 
         plotter = _plotter()
         sync_active_dataset = getattr(plotter, "sync_active_dataset", None)
@@ -2476,34 +2498,26 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             "active_dataset": active,
             "basis_used": result.embedding_basis,
             "color_used": result.color_columns,
-            "output_file": output_file,
-            "output_markdown": output_markdown,
-            "inline_markdown": output_markdown,
-            "canonical_response_markdown": canonical_response_markdown,
+            "inline_markdown": canonical_response_markdown or output_markdown,
         }
-        if output_url:
-            response["output_url"] = output_url
         return response
 
     @app.post(
         "/generate_diffmap_plot",
         dependencies=[Depends(_require_api_key)],
         operation_id="generate_diffmap_plot",
-        summary="Generate a customizable diffusion map embedding plot for the active dataset",
-        description=(
-            "Plot a diffusion map (diffusion pseudo-time embedding) scatter plot. "
-            "Requires sc.tl.diffmap to have been run on the dataset first (needs precomputed neighbors). "
-            "If the embedding is missing, the tool returns a clear error. "
-            "Color cells by any observation column or gene expression. "
-            "Use the components parameter to select which diffusion components to plot (e.g. '1,2' or '2,3'). "
-            "All scanpy.pl.diffmap parameters are exposed."
-        ),
+        summary="Diffusion map plot",
+        description="Diffusion map scatter plot. Requires precomputed sc.tl.diffmap.",
     )
     async def generate_diffmap_plot(payload: DiffmapPlotRequest) -> dict[str, Any]:
         try:
             adata, active = RUNTIME_STATE.require_active_adata()
         except NoActiveDatasetError as exc:
             return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
 
         plotter = _plotter()
         sync_active_dataset = getattr(plotter, "sync_active_dataset", None)
@@ -2567,33 +2581,26 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             "status": "success",
             "active_dataset": active,
             "color_used": result.color_columns,
-            "output_file": output_file,
-            "output_markdown": output_markdown,
-            "inline_markdown": output_markdown,
-            "canonical_response_markdown": canonical_response_markdown,
+            "inline_markdown": canonical_response_markdown or output_markdown,
         }
-        if output_url:
-            response["output_url"] = output_url
         return response
 
     @app.post(
         "/generate_umap_plot",
         dependencies=[Depends(_require_api_key)],
         operation_id="generate_umap_plot",
-        summary="Generate a customizable UMAP embedding plot for the active dataset",
-        description=(
-            "Plot a UMAP (Uniform Manifold Approximation and Projection) scatter plot. "
-            "If no UMAP embedding has been computed, it is calculated automatically (falls back to tSNE if UMAP fails). "
-            "Color cells by any observation column (e.g. 'author_cell_type') or gene expression. "
-            "Legend is placed on the right margin by default with auto-scaled font size. "
-            "All scanpy.pl.umap parameters are exposed."
-        ),
+        summary="UMAP plot",
+        description="UMAP scatter plot; auto-computes if missing.",
     )
     async def generate_umap_plot(payload: UmapPlotRequest) -> dict[str, Any]:
         try:
             adata, active = RUNTIME_STATE.require_active_adata()
         except NoActiveDatasetError as exc:
             return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
 
         plotter = _plotter()
         sync_active_dataset = getattr(plotter, "sync_active_dataset", None)
@@ -2650,33 +2657,26 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             "status": "success",
             "active_dataset": active,
             "color_used": result.color_columns,
-            "output_file": output_file,
-            "output_markdown": output_markdown,
-            "inline_markdown": output_markdown,
-            "canonical_response_markdown": canonical_response_markdown,
+            "inline_markdown": canonical_response_markdown or output_markdown,
         }
-        if output_url:
-            response["output_url"] = output_url
         return response
 
     @app.post(
         "/generate_tsne_plot",
         dependencies=[Depends(_require_api_key)],
         operation_id="generate_tsne_plot",
-        summary="Generate a customizable tSNE embedding plot for the active dataset",
-        description=(
-            "Plot a tSNE (t-distributed stochastic neighbor embedding) scatter plot. "
-            "If no tSNE embedding has been computed, it is calculated automatically. "
-            "Color cells by any observation column (e.g. 'author_cell_type') or gene expression. "
-            "Legend is placed on the right margin by default with auto-scaled font size. "
-            "All scanpy.pl.tsne parameters are exposed."
-        ),
+        summary="tSNE plot",
+        description="tSNE scatter plot; auto-computes if missing.",
     )
     async def generate_tsne_plot(payload: TsnePlotRequest) -> dict[str, Any]:
         try:
             adata, active = RUNTIME_STATE.require_active_adata()
         except NoActiveDatasetError as exc:
             return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
 
         plotter = _plotter()
         sync_active_dataset = getattr(plotter, "sync_active_dataset", None)
@@ -2733,32 +2733,26 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             "status": "success",
             "active_dataset": active,
             "color_used": result.color_columns,
-            "output_file": output_file,
-            "output_markdown": output_markdown,
-            "inline_markdown": output_markdown,
-            "canonical_response_markdown": canonical_response_markdown,
+            "inline_markdown": canonical_response_markdown or output_markdown,
         }
-        if output_url:
-            response["output_url"] = output_url
         return response
 
     @app.post(
         "/generate_dendrogram",
         dependencies=[Depends(_require_api_key)],
         operation_id="generate_dendrogram",
-        summary="Generate a dendrogram showing hierarchical relationships between cell groups",
-        description=(
-            "Plot a dendrogram of groupby categories based on their expression profiles. "
-            "If sc.tl.dendrogram has not been run yet for the given groupby, it is computed automatically. "
-            "groupby defaults to 'author_cell_type'. "
-            "Use orientation to control which direction the tree grows ('top', 'bottom', 'left', 'right')."
-        ),
+        summary="Dendrogram",
+        description="Dendrogram of groupby categories; auto-computes if missing.",
     )
     async def generate_dendrogram(payload: DendrogramRequest) -> dict[str, Any]:
         try:
             adata, active = RUNTIME_STATE.require_active_adata()
         except NoActiveDatasetError as exc:
             return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
 
         plotter = _plotter()
         sync_active_dataset = getattr(plotter, "sync_active_dataset", None)
@@ -2796,112 +2790,35 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             "status": "success",
             "active_dataset": active,
             "groupby_used": result.resolved_groupby,
-            "output_file": output_file,
-            "output_markdown": output_markdown,
-            "inline_markdown": output_markdown,
-            "canonical_response_markdown": canonical_response_markdown,
+            "inline_markdown": canonical_response_markdown or output_markdown,
         }
-        if output_url:
-            response["output_url"] = output_url
         return response
 
     @app.post(
         "/generate_clustermap",
         dependencies=[Depends(_require_api_key)],
         operation_id="generate_clustermap",
-        summary="Generate a clustermap (hierarchically clustered heatmap) for the active dataset",
-        description=(
-            "Plot a seaborn clustermap — cells and genes are both hierarchically clustered and reordered. "
-            "Unlike heatmap/dotplot, there is no fixed groupby axis; clustering arranges rows and columns automatically. "
-            "Providing a gene list via markers_json is strongly recommended — plotting all genes is very slow. "
-            "If markers_json is empty, session markers set by set_markers are used. "
-            "obs_keys can optionally color-code rows by a categorical observation column."
-        ),
+        include_in_schema=False,
     )
     async def generate_clustermap(payload: ClustermapRequest) -> dict[str, Any]:
-        try:
-            adata, active = RUNTIME_STATE.require_active_adata()
-        except NoActiveDatasetError as exc:
-            return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
-
-        var_names = _parse_string_list(payload.markers_json)
-        plotter = _plotter()
-        sync_active_dataset = getattr(plotter, "sync_active_dataset", None)
-        if callable(sync_active_dataset):
-            sync_active_dataset(active, adata)
-
-        if not var_names:
-            var_names = plotter.get_markers()
-        # Note: unlike other tools, clustermap does NOT error if no genes — it falls back to all genes.
-        # But we warn in the response.
-
-        figsize: tuple[float, float] | None = None
-        if payload.figsize_width is not None and payload.figsize_height is not None:
-            figsize = (float(payload.figsize_width), float(payload.figsize_height))
-
-        try:
-            result = plotter.run_clustermap(
-                adata,
-                var_names,
-                obs_keys=str(payload.obs_keys or "").strip() or None,
-                use_raw=payload.use_raw,
-                standard_scale=str(payload.standard_scale or "").strip() or None,
-                z_score=payload.z_score,
-                method=str(payload.method or "average").strip() or "average",
-                metric=str(payload.metric or "euclidean").strip() or "euclidean",
-                cmap=str(payload.cmap or "viridis").strip() or "viridis",
-                figsize=figsize,
-                title=str(payload.title or "").strip() or None,
-            )
-        except Exception as exc:
-            return {"ok": False, "status": "plot_error", "message": str(exc), "active_dataset": active}
-
-        output_file = str(result.output_file.resolve())
-        output_url = _public_assets_url(output_file)
-        output_markdown = _output_markdown(output_file, output_url)
-        canonical_response_markdown = build_canonical_response_markdown(active, {
-            "plot_type": result.plot_type,
-            "display_plot_type": result.display_plot_type,
-            "resolved_genes": result.resolved_genes,
-            "resolved_groupby": result.resolved_groupby,
-        }, output_markdown)
-
-        response: dict[str, Any] = {
-            "ok": True,
-            "status": "success",
-            "active_dataset": active,
-            "var_names_used": result.resolved_genes,
-            "obs_keys_used": result.resolved_groupby,
-            "output_file": output_file,
-            "output_markdown": output_markdown,
-            "inline_markdown": output_markdown,
-            "canonical_response_markdown": canonical_response_markdown,
-        }
-        if not var_names:
-            response["warning"] = "No genes specified — clustered all genes. This may be slow for large datasets."
-        if output_url:
-            response["output_url"] = output_url
-        return response
+        return {"ok": False, "status": "disabled", "message": "Clustermap plotting is temporarily disabled."}
 
     @app.post(
         "/generate_matrixplot",
         dependencies=[Depends(_require_api_key)],
         operation_id="generate_matrixplot",
-        summary="Generate a customizable matrix plot for the active dataset",
-        description=(
-            "Plot mean gene expression as a color-coded matrix — rows are genes, columns are cell type groups "
-            "(or swapped with swap_axes). Each cell shows the mean expression of that gene in that group. "
-            "Genes are taken from markers_json; if empty, session markers set by set_markers are used. "
-            "If neither is provided, the tool returns an error asking for genes. "
-            "groupby defaults to 'author_cell_type'. "
-            "All scanpy.pl.matrixplot parameters are exposed."
-        ),
+        summary="Matrix plot",
+        description="Matrix of mean gene expression per group. Genes from markers_json or session markers.",
     )
     async def generate_matrixplot(payload: MatrixplotRequest) -> dict[str, Any]:
         try:
             adata, active = RUNTIME_STATE.require_active_adata()
         except NoActiveDatasetError as exc:
             return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
 
         var_names = _parse_string_list(payload.markers_json)
         plotter = _plotter()
@@ -2968,34 +2885,26 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             "active_dataset": active,
             "var_names_used": result.resolved_genes,
             "groupby_used": result.resolved_groupby,
-            "output_file": output_file,
-            "output_markdown": output_markdown,
-            "inline_markdown": output_markdown,
-            "canonical_response_markdown": canonical_response_markdown,
+            "inline_markdown": canonical_response_markdown or output_markdown,
         }
-        if output_url:
-            response["output_url"] = output_url
         return response
 
     @app.post(
         "/generate_stacked_violin",
         dependencies=[Depends(_require_api_key)],
         operation_id="generate_stacked_violin",
-        summary="Generate a customizable stacked violin plot for the active dataset",
-        description=(
-            "Plot gene expression as stacked violins — one violin per gene per group — allowing "
-            "comparison of expression distributions across many cell types at once. "
-            "Genes are taken from markers_json; if empty, session markers set by set_markers are used. "
-            "If neither is provided, the tool returns an error asking for genes. "
-            "groupby defaults to 'author_cell_type'. "
-            "All scanpy.pl.stacked_violin parameters are exposed."
-        ),
+        summary="Stacked violin plot",
+        description="Stacked violins per gene per group. Genes from markers_json or session markers.",
     )
     async def generate_stacked_violin(payload: StackedViolinRequest) -> dict[str, Any]:
         try:
             adata, active = RUNTIME_STATE.require_active_adata()
         except NoActiveDatasetError as exc:
             return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
 
         var_names = _parse_string_list(payload.markers_json)
         plotter = _plotter()
@@ -3067,34 +2976,26 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             "active_dataset": active,
             "var_names_used": result.resolved_genes,
             "groupby_used": result.resolved_groupby,
-            "output_file": output_file,
-            "output_markdown": output_markdown,
-            "inline_markdown": output_markdown,
-            "canonical_response_markdown": canonical_response_markdown,
+            "inline_markdown": canonical_response_markdown or output_markdown,
         }
-        if output_url:
-            response["output_url"] = output_url
         return response
 
     @app.post(
         "/generate_tracksplot",
         dependencies=[Depends(_require_api_key)],
         operation_id="generate_tracksplot",
-        summary="Generate a customizable tracks plot for the active dataset",
-        description=(
-            "Plot gene expression as a tracks plot (one track per group) grouped by any observation column. "
-            "Each row represents a groupby category; each column is a gene. "
-            "Genes are taken from markers_json; if empty, session markers set by set_markers are used. "
-            "If neither is provided, the tool returns an error asking for genes. "
-            "groupby defaults to 'author_cell_type'. "
-            "All scanpy.pl.tracksplot parameters are exposed."
-        ),
+        summary="Tracks plot",
+        description="Tracks plot: each row=group, each col=gene. Genes from markers_json or session markers.",
     )
     async def generate_tracksplot(payload: TracksplotRequest) -> dict[str, Any]:
         try:
             adata, active = RUNTIME_STATE.require_active_adata()
         except NoActiveDatasetError as exc:
             return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
 
         var_names = _parse_string_list(payload.markers_json)
         plotter = _plotter()
@@ -3150,24 +3051,81 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             "active_dataset": active,
             "var_names_used": result.resolved_genes,
             "groupby_used": result.resolved_groupby,
-            "output_file": output_file,
-            "output_markdown": output_markdown,
-            "inline_markdown": output_markdown,
-            "canonical_response_markdown": canonical_response_markdown,
+            "inline_markdown": canonical_response_markdown or output_markdown,
         }
-        if output_url:
-            response["output_url"] = output_url
         return response
+
+    @app.post(
+        "/print_adata",
+        dependencies=[Depends(_require_api_key)],
+        operation_id="print_adata",
+        summary="Dataset summary",
+        description="Return AnnData summary: dims, obs/var columns, embeddings, uns keys, layers.",
+    )
+    async def print_adata() -> dict[str, Any]:
+        try:
+            adata, active = RUNTIME_STATE.require_active_adata()
+        except NoActiveDatasetError as exc:
+            return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+
+        obs_cols = [str(c) for c in adata.obs.columns]
+        var_cols = [str(c) for c in adata.var.columns]
+        obsm_keys = [str(k) for k in adata.obsm.keys()]
+        obsp_keys = [str(k) for k in adata.obsp.keys()]
+        uns_keys = [str(k) for k in adata.uns.keys()]
+        layers_keys = [str(k) for k in adata.layers.keys()]
+
+        summary_text = str(adata)
+
+        # Detect best annotation column for contextual suggestions
+        _CELL_TYPE_KEYWORDS = (
+            "cell_type", "celltype", "cell_label", "celllabel",
+            "annotation", "annot", "cluster", "leiden", "louvain",
+            "subtype", "lineage", "phenotype", "identity", "ident",
+            "label", "class", "state", "population",
+        )
+        annotation_col: str | None = None
+        for col in obs_cols:
+            lc = col.lower().replace(" ", "_").replace("-", "_")
+            if any(kw in lc for kw in _CELL_TYPE_KEYWORDS):
+                annotation_col = col
+                break
+
+        ann = annotation_col or (obs_cols[0] if obs_cols else "cell_type")
+        has_rgg = any(
+            isinstance(adata.uns.get(k), dict) and "names" in adata.uns[k]
+            for k in adata.uns
+        )
+        suggested_next_steps = [
+            {"label": "UMAP", "prompt": "show me a UMAP"},
+            {"label": "Cell counts", "prompt": f"plot cell counts by {ann}"},
+            {"label": "Violin plot", "prompt": f"use violin plot to show the expression of any gene across {ann}"},
+        ]
+        if has_rgg:
+            suggested_next_steps.append({"label": "Markers/top genes", "prompt": "show top marker genes"})
+
+        return {
+            "ok": True,
+            "status": "success",
+            "active_dataset": active,
+            "summary": summary_text,
+            "n_obs": int(adata.n_obs),
+            "n_vars": int(adata.n_vars),
+            "obs_columns": obs_cols,
+            "var_columns": var_cols,
+            "obsm_keys": obsm_keys,
+            "obsp_keys": obsp_keys,
+            "uns_keys": uns_keys,
+            "layers": layers_keys,
+            "suggested_next_steps": suggested_next_steps,
+        }
 
     @app.post(
         "/print_adata_obs",
         dependencies=[Depends(_require_api_key)],
         operation_id="print_adata_obs",
-        summary="Inspect the active dataset observation table",
-        description=(
-            "List AnnData observation metadata using the command `print(adata.obs)`. "
-            "The tool returns the available `.obs` column names for the active dataset."
-        ),
+        summary="Inspect obs table",
+        description="List adata.obs column names.",
     )
     async def print_adata_obs(payload: ExecuteDatasetCommandRequest) -> dict[str, Any]:
         try:
@@ -3189,30 +3147,171 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
                 "supported_commands": ["print(adata.obs)"],
             }
 
-        obs_columns = [str(column) for column in adata.obs.columns]
+        _CELL_TYPE_KEYWORDS = (
+            "cell_type", "celltype", "cell_label", "celllabel",
+            "annotation", "annot", "cluster", "leiden", "louvain",
+            "subtype", "lineage", "phenotype", "identity", "ident",
+            "label", "class", "state", "population",
+        )
+
+        def _is_cell_type_col(col: str) -> bool:
+            lc = col.lower().replace(" ", "_").replace("-", "_")
+            return any(kw in lc for kw in _CELL_TYPE_KEYWORDS)
+
+        categorical_cols: list[dict] = []
+        numerical_cols: list[str] = []
+        other_cols: list[str] = []
+
+        for col in adata.obs.columns:
+            col_str = str(col)
+            series = adata.obs[col]
+            if hasattr(series, "cat") or str(series.dtype) == "category" or series.dtype == object:
+                try:
+                    unique_vals = sorted(series.dropna().unique().tolist(), key=lambda v: str(v))
+                    unique_vals_str = [str(v) for v in unique_vals]
+                except Exception:
+                    unique_vals_str = []
+                _MAX_VALUES = 50
+                categorical_cols.append({
+                    "column": col_str,
+                    "n_unique": len(unique_vals_str),
+                    "values": unique_vals_str[:_MAX_VALUES],
+                    "values_truncated": len(unique_vals_str) > _MAX_VALUES,
+                    "is_annotation": _is_cell_type_col(col_str),
+                })
+            elif hasattr(series, "dtype") and str(series.dtype).startswith(("int", "float", "uint")):
+                numerical_cols.append(col_str)
+            else:
+                other_cols.append(col_str)
+
+        # Sort categorical: annotation/cell-type columns first, then the rest alphabetically
+        annotation_cols = [c for c in categorical_cols if c["is_annotation"]]
+        non_annotation_cols = [c for c in categorical_cols if not c["is_annotation"]]
+        annotation_cols.sort(key=lambda c: c["column"])
+        non_annotation_cols.sort(key=lambda c: c["column"])
+        ordered_categorical = annotation_cols + non_annotation_cols
+
+        # Strip internal flag before returning
+        for c in ordered_categorical:
+            del c["is_annotation"]
+
+        # Build a human-readable markdown summary for inline display
+        n_cells, n_cols = int(adata.n_obs), int(len(adata.obs.columns))
+        md_lines: list[str] = [
+            f"**Dataset OBS — {n_cells:,} cells × {n_cols} columns**",
+            "",
+        ]
+
+        if ordered_categorical:
+            md_lines.append("**Categorical columns:**")
+            for c in ordered_categorical:
+                vals = c["values"]
+                preview = ", ".join(str(v) for v in vals[:8])
+                if len(vals) > 8:
+                    preview += f", … (+{len(vals) - 8} more)"
+                md_lines.append(f"- **{c['column']}** ({c['n_unique']} unique): {preview}")
+            md_lines.append("")
+
+        if numerical_cols:
+            md_lines.append("**Numerical columns:**")
+            md_lines.append("- " + ", ".join(numerical_cols))
+            md_lines.append("")
+
+        if other_cols:
+            md_lines.append("**Other columns:**")
+            md_lines.append("- " + ", ".join(other_cols))
+
+        inline_markdown = "\n".join(md_lines).strip()
+
         return {
             "ok": True,
             "status": "success",
             "command": "print(adata.obs)",
             "active_dataset": active,
-            "obs_columns": obs_columns,
-            "obs_shape": [int(adata.n_obs), len(obs_columns)],
+            "obs_shape": [n_cells, n_cols],
+            "categorical_columns": ordered_categorical,
+            "numerical_columns": numerical_cols,
+            "other_columns": other_cols,
+            "inline_markdown": inline_markdown,
+        }
+
+    @app.post(
+        "/get_obs_unique_values",
+        dependencies=[Depends(_require_api_key)],
+        operation_id="get_obs_unique_values",
+        summary="Unique values for an obs column",
+        description=(
+            "Return ALL unique values for a given adata.obs column, sorted alphabetically. "
+            "Use this whenever the user asks for 'list of unique values', 'what values does X have', "
+            "'full list of diseases', 'all cell types', etc. "
+            "Pass column='' to get all categorical columns with their full value lists."
+        ),
+    )
+    async def get_obs_unique_values(payload: ObsUniqueValuesRequest) -> dict[str, Any]:
+        try:
+            adata, active = RUNTIME_STATE.require_active_adata()
+        except NoActiveDatasetError as exc:
+            return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+
+        col = str(payload.column).strip()
+
+        def _col_unique(series: "pd.Series") -> list[str]:
+            try:
+                vals = sorted(series.dropna().unique().tolist(), key=lambda v: str(v))
+                return [str(v) for v in vals]
+            except Exception:
+                return [str(v) for v in series.dropna().unique().tolist()]
+
+        # Single column
+        if col:
+            # Case-insensitive match
+            col_map = {str(c).lower(): str(c) for c in adata.obs.columns}
+            resolved = col if col in adata.obs.columns else col_map.get(col.lower())
+            if not resolved:
+                return {
+                    "ok": False,
+                    "status": "column_not_found",
+                    "message": f"Column '{col}' not found in adata.obs.",
+                    "available_columns": [str(c) for c in adata.obs.columns],
+                    "active_dataset": active,
+                }
+            vals = _col_unique(adata.obs[resolved])
+            md = f"**{resolved}** — {len(vals)} unique values:\n\n" + "\n".join(f"- {v}" for v in vals)
+            return {
+                "ok": True,
+                "status": "success",
+                "active_dataset": active,
+                "column": resolved,
+                "n_unique": len(vals),
+                "values": vals,
+                "inline_markdown": md,
+            }
+
+        # All categorical columns
+        results = []
+        for c in adata.obs.columns:
+            series = adata.obs[c]
+            if hasattr(series, "cat") or str(series.dtype) in ("category", "object"):
+                vals = _col_unique(series)
+                results.append({"column": str(c), "n_unique": len(vals), "values": vals})
+
+        md_lines = [f"**All categorical obs columns ({len(results)} total):**", ""]
+        for r in results:
+            md_lines.append(f"**{r['column']}** ({r['n_unique']} unique): " + ", ".join(r["values"]))
+        return {
+            "ok": True,
+            "status": "success",
+            "active_dataset": active,
+            "columns": results,
+            "inline_markdown": "\n".join(md_lines),
         }
 
     @app.post(
         "/generate_rank_genes_groups_stacked_violin",
         dependencies=[Depends(_require_api_key)],
         operation_id="generate_rank_genes_groups_stacked_violin",
-        summary="Plot top-ranked genes per group as a stacked violin from precomputed sc.tl.rank_genes_groups results",
-        description=(
-            "Plot expression distributions of top-ranked genes per group as stacked violins. "
-            "Each row is a gene; each violin shows the expression distribution within a cell type group. "
-            "This tool does NOT auto-compute rank_genes_groups — if results are missing it returns "
-            "'no_rank_genes_groups' with instructions. "
-            "Use var_names_json to override ranked genes with a specific list. "
-            "Use swap_axes=True when there are many cell types to avoid label overlap. "
-            "All scanpy.pl.rank_genes_groups_stacked_violin parameters are exposed."
-        ),
+        summary="Rank genes stacked violin",
+        description="Stacked violins of top-ranked genes. Requires precomputed rank_genes_groups.",
     )
     async def generate_rank_genes_groups_stacked_violin(
         payload: RankGenesGroupsStackedViolinRequest,
@@ -3221,6 +3320,10 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             adata, active = RUNTIME_STATE.require_active_adata()
         except NoActiveDatasetError as exc:
             return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
 
         plotter = _plotter()
         sync_active_dataset = getattr(plotter, "sync_active_dataset", None)
@@ -3282,14 +3385,403 @@ def create_app(store: GenoPixelCatalogStore | None = None) -> FastAPI:
             "status": "success",
             "active_dataset": active,
             "groupby_used": result.resolved_groupby,
-            "output_file": output_file,
-            "output_markdown": output_markdown,
-            "inline_markdown": output_markdown,
-            "canonical_response_markdown": canonical_response_markdown,
+            "inline_markdown": canonical_response_markdown or output_markdown,
         }
-        if output_url:
-            response["output_url"] = output_url
         return response
+
+    @app.post(
+        "/generate_highest_expr_genes",
+        dependencies=[Depends(_require_api_key)],
+        operation_id="generate_highest_expr_genes",
+        summary="Highest expressed genes",
+        description=(
+            "Plots sc.pl.highest_expr_genes — for each gene, computes the fraction of counts "
+            "assigned to that gene within each cell, then shows the n_top genes with the highest "
+            "mean fraction as horizontal boxplots. "
+            "Useful for quality control: expect mitochondrial genes, actin, ribosomal proteins, and MALAT1. "
+            "Does not require any prior computation — works directly on the raw count matrix."
+        ),
+    )
+    async def generate_highest_expr_genes(payload: HighestExprGenesRequest) -> dict[str, Any]:
+        try:
+            adata, active = RUNTIME_STATE.require_active_adata()
+        except NoActiveDatasetError as exc:
+            return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
+
+        plotter = _plotter()
+        sync_active_dataset = getattr(plotter, "sync_active_dataset", None)
+        if callable(sync_active_dataset):
+            sync_active_dataset(active, adata)
+
+        try:
+            result = plotter.run_highest_expr_genes(
+                adata,
+                n_top=int(payload.n_top),
+                layer=str(payload.layer or "").strip() or None,
+                gene_symbols=str(payload.gene_symbols or "").strip() or None,
+                log=bool(payload.log),
+                title=str(payload.title or "").strip() or None,
+            )
+        except Exception as exc:
+            return {"ok": False, "status": "plot_error", "message": str(exc), "active_dataset": active}
+
+        output_file = str(result.output_file.resolve())
+        output_url = _public_assets_url(output_file)
+        output_markdown = _output_markdown(output_file, output_url)
+        canonical_response_markdown = build_canonical_response_markdown(active, {
+            "plot_type": result.plot_type,
+            "display_plot_type": result.display_plot_type,
+        }, output_markdown)
+
+        response: dict[str, Any] = {
+            "ok": True,
+            "status": "success",
+            "active_dataset": active,
+            "inline_markdown": canonical_response_markdown or output_markdown,
+        }
+        return response
+
+    @app.post(
+        "/generate_scatter",
+        summary="Scatter plot",
+        description=(
+            "Generates a scatter plot using sc.pl.scatter for the active dataset. "
+            "Supports QC scatter plots (e.g. n_counts vs pct_counts_mt), embedding-based scatter "
+            "(basis='umap'), and any combination of obs columns or genes on x/y axes. "
+            "Color by observation columns or gene expression."
+        ),
+    )
+    async def generate_scatter(payload: ScatterPlotRequest) -> dict[str, Any]:
+        try:
+            adata, active = RUNTIME_STATE.require_active_adata()
+        except NoActiveDatasetError as exc:
+            return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
+
+        plotter = _plotter()
+        sync_active_dataset = getattr(plotter, "sync_active_dataset", None)
+        if callable(sync_active_dataset):
+            sync_active_dataset(active, adata)
+
+        try:
+            color_list: list[str] = []
+            raw_color = str(payload.color_json or "").strip()
+            if raw_color and raw_color != "[]":
+                try:
+                    parsed = json.loads(raw_color)
+                    color_list = [str(c) for c in parsed] if isinstance(parsed, list) else [str(parsed)]
+                except json.JSONDecodeError:
+                    color_list = [c.strip() for c in raw_color.split(",") if c.strip()]
+
+            groups_list: list[str] | None = None
+            raw_groups = str(payload.groups_json or "").strip()
+            if raw_groups and raw_groups != "[]":
+                try:
+                    parsed_g = json.loads(raw_groups)
+                    groups_list = [str(g) for g in parsed_g] if isinstance(parsed_g, list) else [str(parsed_g)]
+                except json.JSONDecodeError:
+                    groups_list = [g.strip() for g in raw_groups.split(",") if g.strip()]
+
+            result = plotter.run_scatter(
+                adata,
+                x=str(payload.x or "").strip() or None,
+                y=str(payload.y or "").strip() or None,
+                color=color_list or None,
+                basis=str(payload.basis or "").strip() or None,
+                use_raw=payload.use_raw,
+                layer=str(payload.layer or "").strip() or None,
+                groups=groups_list,
+                components=str(payload.components or "").strip() or None,
+                sort_order=bool(payload.sort_order),
+                legend_loc=str(payload.legend_loc or "right margin").strip() or "right margin",
+                size=payload.size,
+                color_map=str(payload.color_map or "").strip() or None,
+                frameon=payload.frameon,
+                title=str(payload.title or "").strip() or None,
+                figsize_width=payload.figsize_width,
+                figsize_height=payload.figsize_height,
+            )
+        except Exception as exc:
+            return {"ok": False, "status": "plot_error", "message": str(exc), "active_dataset": active}
+
+        output_file = str(result.output_file.resolve())
+        output_url = _public_assets_url(output_file)
+        output_markdown = _output_markdown(output_file, output_url)
+        canonical_response_markdown = build_canonical_response_markdown(active, {
+            "plot_type": result.plot_type,
+            "display_plot_type": result.display_plot_type,
+        }, output_markdown)
+
+        response: dict[str, Any] = {
+            "ok": True,
+            "status": "success",
+            "active_dataset": active,
+            "inline_markdown": canonical_response_markdown or output_markdown,
+        }
+        return response
+
+    @app.post(
+        "/obs_count_table",
+        dependencies=[Depends(_require_api_key)],
+        operation_id="obs_count_table",
+        summary="Cell count table for two OBS categories",
+        description=(
+            "Groups the active dataset's obs by two categorical columns and returns n_cells per group. "
+            "If the result has more than 10 rows, only the top-5 and bottom-5 rows are returned."
+        ),
+    )
+    async def obs_count_table(payload: ObsCountTableRequest) -> dict[str, Any]:
+        try:
+            adata, active = RUNTIME_STATE.require_active_adata()
+        except NoActiveDatasetError as exc:
+            return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
+
+        obs_cols = list(adata.obs.columns)
+        for col in (payload.row_col, payload.col_col):
+            if col not in obs_cols:
+                return {
+                    "ok": False,
+                    "status": "column_not_found",
+                    "message": f"Column '{col}' not found in adata.obs.",
+                    "available_columns": obs_cols,
+                    "active_dataset": active,
+                }
+
+        counts: pd.DataFrame = (
+            adata.obs
+            .groupby([payload.row_col, payload.col_col], observed=True)
+            .size()
+            .reset_index(name="n_cells")
+        )
+        counts = counts.sort_values("n_cells", ascending=False).reset_index(drop=True)
+
+        total_rows = len(counts)
+        truncated = total_rows > 10
+        if truncated:
+            display_df = pd.concat([counts.head(5), counts.tail(5)], ignore_index=True)
+        else:
+            display_df = counts
+
+        # Save full CSV for download
+        output_dir = Path(os.environ.get("OUTPUT_DIR", "/code/out/genopixel"))
+        csv_dir = output_dir / "count_tables"
+        csv_dir.mkdir(parents=True, exist_ok=True)
+        csv_filename = f"count_table_{payload.row_col}_x_{payload.col_col}_{int(time.time())}.csv"
+        csv_path = csv_dir / csv_filename
+        counts.to_csv(csv_path, index=False)
+        csv_url = _public_assets_url(str(csv_path))
+
+        # Build markdown table (truncated for display)
+        header = (
+            f"**Cell count table — `{payload.row_col}` × `{payload.col_col}`** "
+            f"({total_rows} groups, {int(counts['n_cells'].sum()):,} cells total"
+            + (", showing top-5 and bottom-5)" if truncated else ")")
+        )
+        if csv_url:
+            header += f"  \n[Download full CSV ↓]({csv_url})"
+
+        md_lines: list[str] = [
+            header,
+            "",
+            f"| {payload.row_col} | {payload.col_col} | n_cells |",
+            f"|{'---'}|{'---'}|{'---'}|",
+        ]
+        if truncated:
+            for _, row in display_df.head(5).iterrows():
+                md_lines.append(f"| {row[payload.row_col]} | {row[payload.col_col]} | {int(row['n_cells']):,} |")
+            md_lines.append(f"| … | … | … ({total_rows - 10} rows omitted) |")
+            for _, row in display_df.tail(5).iterrows():
+                md_lines.append(f"| {row[payload.row_col]} | {row[payload.col_col]} | {int(row['n_cells']):,} |")
+        else:
+            for _, row in display_df.iterrows():
+                md_lines.append(f"| {row[payload.row_col]} | {row[payload.col_col]} | {int(row['n_cells']):,} |")
+
+        return {
+            "ok": True,
+            "status": "success",
+            "active_dataset": active,
+            "row_col": payload.row_col,
+            "col_col": payload.col_col,
+            "total_groups": total_rows,
+            "total_cells": int(counts["n_cells"].sum()),
+            "truncated": truncated,
+            "csv_url": csv_url,
+            "rows": display_df.to_dict(orient="records"),
+            "inline_markdown": "\n".join(md_lines),
+        }
+
+    @app.post(
+        "/generate_spatial_scatter",
+        dependencies=[Depends(_require_api_key)],
+        operation_id="generate_spatial_scatter",
+        summary="Spatial scatter plot",
+        description=(
+            "Generates a spatial scatter plot for spatial transcriptomics datasets "
+            "using squidpy sq.pl.spatial_scatter. Only valid when adata.uns has 'spatial' "
+            "and adata.obsm has 'spatial'. Color by adata.obs columns or gene names/ENS IDs. "
+            "Automatically selects the cell type column when color is not specified. "
+            "If adata.uns['spatial'] has library entries (image + spot info), the tissue image "
+            "is overlaid; otherwise spots are plotted without an image background. "
+            "Supports layout (wspace, hspace, ncols), shape, size, alpha, cmap, palette, "
+            "legend_loc, colorbar, frameon, outline, groups, layer, and crop_coord."
+        ),
+    )
+    async def generate_spatial_scatter(payload: SpatialScatterRequest) -> dict[str, Any]:
+        try:
+            adata, active = RUNTIME_STATE.require_active_adata()
+        except NoActiveDatasetError as exc:
+            return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
+
+        if "spatial" not in adata.uns or "spatial" not in adata.obsm:
+            return {
+                "ok": False,
+                "status": "not_spatial",
+                "message": (
+                    "Active dataset is not a spatial transcriptomics dataset. "
+                    "Requires adata.uns['spatial'] and adata.obsm['spatial']."
+                ),
+                "active_dataset": active,
+            }
+
+        plotter = _plotter()
+        sync_active_dataset = getattr(plotter, "sync_active_dataset", None)
+        if callable(sync_active_dataset):
+            sync_active_dataset(active, adata)
+
+        color = _parse_string_list(payload.color_json)
+
+        groups = _parse_string_list(payload.groups_json)
+        crop = tuple(payload.crop_coord) if payload.crop_coord and len(payload.crop_coord) == 4 else None  # type: ignore[arg-type]
+
+        try:
+            result = plotter.run_spatial_scatter(
+                adata,
+                color=color or None,
+                figsize_width=payload.figsize_width,
+                figsize_height=payload.figsize_height,
+                title=str(payload.title or "").strip() or None,
+                wspace=payload.wspace,
+                hspace=payload.hspace,
+                ncols=payload.ncols,
+                shape=payload.shape,
+                size=payload.size,
+                alpha=payload.alpha,
+                cmap=payload.cmap,
+                palette=payload.palette,
+                na_color=payload.na_color,
+                img=payload.img,
+                img_alpha=payload.img_alpha,
+                crop_coord=crop,
+                legend_loc=payload.legend_loc,
+                legend_fontsize=payload.legend_fontsize,
+                colorbar=payload.colorbar,
+                frameon=payload.frameon,
+                outline=payload.outline,
+                groups=groups or None,
+                layer=payload.layer,
+                use_raw=payload.use_raw,
+            )
+        except Exception as exc:
+            return {"ok": False, "status": "plot_error", "message": str(exc), "active_dataset": active}
+
+        output_file = str(result.output_file.resolve())
+        output_url = _public_assets_url(output_file)
+        output_markdown = _output_markdown(output_file, output_url)
+        canonical_response_markdown = build_canonical_response_markdown(active, {
+            "plot_type": result.plot_type,
+            "display_plot_type": result.display_plot_type,
+        }, output_markdown)
+
+        return {
+            "ok": True,
+            "status": "success",
+            "active_dataset": active,
+            "color_used": result.color_columns,
+            "inline_markdown": canonical_response_markdown or output_markdown,
+        }
+
+    @app.post(
+        "/generate_nhood_enrichment",
+        dependencies=[Depends(_require_api_key)],
+        operation_id="generate_nhood_enrichment",
+        summary="Neighborhood enrichment analysis and plot",
+        description=(
+            "Computes and plots neighborhood enrichment for spatial transcriptomics datasets "
+            "using squidpy. Runs sq.gr.spatial_neighbors, sq.gr.nhood_enrichment, and "
+            "sq.pl.nhood_enrichment in sequence. Only valid when adata.uns has 'spatial' "
+            "and adata.obsm has 'spatial'. cluster_key defaults to the auto-detected cell "
+            "type column. mode can be 'zscore' (default) or 'count'."
+        ),
+    )
+    async def generate_nhood_enrichment(payload: NhoodEnrichmentRequest) -> dict[str, Any]:
+        try:
+            adata, active = RUNTIME_STATE.require_active_adata()
+        except NoActiveDatasetError as exc:
+            return {"ok": False, "status": "no_active_dataset", "message": str(exc)}
+        try:
+            adata = _apply_obs_filter(adata, payload.obs_filter_json)
+        except ValueError as exc:
+            return {"ok": False, "status": "obs_filter_error", "message": str(exc), "active_dataset": active}
+
+        if "spatial" not in adata.uns or "spatial" not in adata.obsm:
+            return {
+                "ok": False,
+                "status": "not_spatial",
+                "message": (
+                    "Active dataset is not a spatial transcriptomics dataset. "
+                    "Requires adata.uns['spatial'] and adata.obsm['spatial']."
+                ),
+                "active_dataset": active,
+            }
+
+        plotter = _plotter()
+        sync_active_dataset = getattr(plotter, "sync_active_dataset", None)
+        if callable(sync_active_dataset):
+            sync_active_dataset(active, adata)
+
+        try:
+            result = plotter.run_nhood_enrichment(
+                adata,
+                cluster_key=str(payload.cluster_key or "").strip() or None,
+                mode=str(payload.mode or "zscore").strip() or "zscore",
+                figsize_width=payload.figsize_width,
+                figsize_height=payload.figsize_height,
+                title=str(payload.title or "").strip() or None,
+            )
+        except Exception as exc:
+            return {"ok": False, "status": "plot_error", "message": str(exc), "active_dataset": active}
+
+        output_file = str(result.output_file.resolve())
+        output_url = _public_assets_url(output_file)
+        output_markdown = _output_markdown(output_file, output_url)
+        canonical_response_markdown = build_canonical_response_markdown(active, {
+            "plot_type": result.plot_type,
+            "display_plot_type": result.display_plot_type,
+        }, output_markdown)
+
+        return {
+            "ok": True,
+            "status": "success",
+            "active_dataset": active,
+            "cluster_key_used": result.resolved_groupby,
+            "inline_markdown": canonical_response_markdown or output_markdown,
+        }
 
     return app
 

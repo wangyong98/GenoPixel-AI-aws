@@ -26,6 +26,7 @@ DISPLAY_NAMES = {
     "rank_genes_groups_heatmap": "Rank-genes heatmap",
     "correlation_matrix": "Correlation matrix",
     "cell_counts_barplot": "Cell counts bar plot",
+    "cell_type_proportion_barplot": "Cell type proportions",
     "tracksplot": "Tracks plot",
     "stacked_violin": "Stacked violin plot",
     "clustermap": "Cluster map",
@@ -64,54 +65,21 @@ def build_canonical_response_markdown(
     if not plot_type or not output_markdown:
         return None
 
-    dataset_title = str(active_dataset.get("title") or "Loaded dataset").strip()
-    total_cells = active_dataset.get("total_cells")
     display_plot_type = _display_name(plot_type, plot_payload.get("display_plot_type"))
     resolved_genes = [str(item).strip() for item in (plot_payload.get("resolved_genes") or []) if str(item).strip()]
     resolved_groupby = str(plot_payload.get("resolved_groupby") or "").strip()
     resolved_coloring_label = str(plot_payload.get("resolved_coloring_label") or "").strip()
     rank_genes_groups_notice = str(plot_payload.get("rank_genes_groups_notice") or "").strip()
 
-    lines = [f"I've successfully generated a {display_plot_type.lower()} for your dataset!", "", f"**Dataset:** {dataset_title}"]
-    if total_cells is not None:
-        lines.append(f"- **Total cells:** {_format_int(total_cells)} cells")
+    parts: list[str] = [display_plot_type]
+    if resolved_coloring_label:
+        parts.append(resolved_coloring_label)
+    elif resolved_groupby:
+        parts.append(resolved_groupby)
+    if resolved_genes:
+        parts.append(_join_tokens(resolved_genes[:5]))
+    if rank_genes_groups_notice:
+        parts.append(rank_genes_groups_notice)
 
-    if plot_type in EMBEDDING_PLOT_TYPES:
-        lines.append(f"- **Visualization type:** {display_plot_type}")
-        if resolved_coloring_label:
-            lines.append(f"- **Coloring:** {resolved_coloring_label}")
-        if resolved_genes:
-            lines.append(f"- **Genes:** {_join_tokens(resolved_genes)}")
-    elif plot_type in DISTRIBUTION_PLOT_TYPES:
-        lines.append(f"- **Plot type:** {display_plot_type}")
-        if resolved_genes:
-            lines.append(f"- **Genes:** {_join_tokens(resolved_genes)}")
-        if resolved_groupby:
-            lines.append(f"- **Grouping column:** {resolved_groupby}")
-    elif plot_type in RANK_GENES_PLOT_TYPES:
-        lines.append(f"- **Plot type:** {display_plot_type}")
-        if resolved_groupby:
-            lines.append(f"- **Ranking basis:** {resolved_groupby}")
-        if rank_genes_groups_notice:
-            lines.append(f"- **Rank-genes status:** {rank_genes_groups_notice}")
-    elif plot_type == "correlation_matrix":
-        lines.append(f"- **Plot type:** {display_plot_type}")
-        if resolved_groupby:
-            lines.append(f"- **Grouping column:** {resolved_groupby}")
-        if resolved_genes:
-            lines.append(f"- **Features:** {_join_tokens(resolved_genes)}")
-    elif plot_type == "cell_counts_barplot":
-        lines.append(f"- **Plot type:** {display_plot_type}")
-        if resolved_groupby:
-            lines.append(f"- **Category column:** {resolved_groupby}")
-    else:
-        lines.append(f"- **Plot type:** {display_plot_type}")
-        if resolved_genes:
-            lines.append(f"- **Features:** {_join_tokens(resolved_genes)}")
-        if resolved_groupby:
-            lines.append(f"- **Grouping column:** {resolved_groupby}")
-        if resolved_coloring_label:
-            lines.append(f"- **Coloring:** {resolved_coloring_label}")
-
-    lines.extend(["", "**View the plot here:**", "", output_markdown])
-    return "\n".join(lines)
+    summary = " • ".join(p for p in parts if p)
+    return f"**{summary}**\n\n{output_markdown}"
