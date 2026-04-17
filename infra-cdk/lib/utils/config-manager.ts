@@ -92,17 +92,19 @@ export class ConfigManager {
         throw new Error(`Invalid network_mode '${networkMode}' in ${configPath}. Must be 'PUBLIC' or 'VPC'.`)
       }
 
-      // Validate VPC configuration when network_mode is VPC
+      // Validate VPC configuration when network_mode is VPC.
+      // The vpc block is OPTIONAL: if absent (or if vpc_id is empty), CDK creates
+      // a new VPC automatically. If present, vpc_id and subnet_ids are required.
       const vpcConfig = parsedConfig.backend?.vpc
-      if (networkMode === "VPC") {
-        if (!vpcConfig) {
-          throw new Error(`backend.vpc configuration is required in ${configPath} when network_mode is 'VPC'.`)
-        }
+      if (networkMode === "VPC" && vpcConfig) {
         if (!vpcConfig.vpc_id) {
-          throw new Error(`backend.vpc.vpc_id is required in ${configPath} when network_mode is 'VPC'.`)
+          throw new Error(
+            `backend.vpc.vpc_id is required in ${configPath} when backend.vpc is specified. ` +
+            `Remove the vpc block entirely to let CDK create a new VPC.`
+          )
         }
         if (!vpcConfig.subnet_ids || vpcConfig.subnet_ids.length === 0) {
-          throw new Error(`backend.vpc.subnet_ids must contain at least one subnet ID in ${configPath} when network_mode is 'VPC'.`)
+          throw new Error(`backend.vpc.subnet_ids must contain at least one subnet ID in ${configPath} when backend.vpc is specified.`)
         }
       }
 

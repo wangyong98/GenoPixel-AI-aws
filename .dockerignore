@@ -1,0 +1,24 @@
+# Prevent CDK from recursively bundling its own output directories
+# and unnecessary large directories into Docker build contexts.
+
+# CDK synthesis output (causes infinite path-nesting in cdk synth)
+infra-cdk/cdk.out
+infra-cdk/node_modules
+
+# Dev artifacts
+.git
+.github
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.pytest_cache
+**/.mypy_cache
+
+# Documentation / browser-saved pages (can be large)
+docs/openwebui
+
+# Local data volumes (never ship to a container)
+.env
+*.h5ad
+*.xlsx
+out/

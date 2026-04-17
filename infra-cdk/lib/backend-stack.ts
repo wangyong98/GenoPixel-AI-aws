@@ -8,6 +8,7 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb"
 import * as apigateway from "aws-cdk-lib/aws-apigateway"
 import * as logs from "aws-cdk-lib/aws-logs"
 import * as s3 from "aws-cdk-lib/aws-s3"
+import * as efs from "aws-cdk-lib/aws-efs"
 import * as agentcore from "@aws-cdk/aws-bedrock-agentcore-alpha"
 import * as bedrockagentcore from "aws-cdk-lib/aws-bedrockagentcore"
 import { PythonFunction } from "@aws-cdk/aws-lambda-python-alpha"
@@ -41,6 +42,10 @@ export class BackendStack extends cdk.NestedStack {
   private machineClientSecret: secretsmanager.Secret
   private runtimeCredentialProvider: cdk.CustomResource
   private agentRuntime: agentcore.Runtime
+  private vpc?: ec2.Vpc
+  private efsFileSystem?: efs.FileSystem
+  private h5adBucket?: s3.Bucket
+  public catalogApiUrl: string = ""
 
   constructor(scope: Construct, id: string, props: BackendStackProps) {
     super(scope, id, props)
@@ -62,6 +67,9 @@ export class BackendStack extends cdk.NestedStack {
       "ImportedUserPoolClient",
       props.userPoolClientId
     )
+
+    // Create VPC, EFS filesystem, and S3 data bucket (must run before createAgentCoreRuntime)
+    this.createVpcAndEfs(props.config)
 
     // Create Machine-to-Machine authentication components
     this.createMachineAuthentication(props.config)
@@ -94,6 +102,9 @@ export class BackendStack extends cdk.NestedStack {
     // Create API Gateway Feedback API resources (example of best-practice API Gateway + Lambda
     // pattern)
     this.createFeedbackApi(props.config, props.frontendUrl, feedbackTable)
+
+    // Create GenoPixel dataset catalog API (dataset browser backend)
+    this.createCatalogApi(props.config, props.frontendUrl)
   }
 
   private createAgentCoreRuntime(config: AppConfig): void {
@@ -332,6 +343,27 @@ export class BackendStack extends cdk.NestedStack {
       })
     )
 
+    // Grant agent access to EFS and S3 data bucket when running in VPC mode
+    if (this.efsFileSystem) {
+      this.efsFileSystem.grantRootAccess(agentRole)
+      // Allow agent to mount EFS via NFS
+      agentRole.addToPolicy(
+        new iam.PolicyStatement({
+          sid: "EfsMountAccess",
+          effect: iam.Effect.ALLOW,
+          actions: [
+            "elasticfilesystem:ClientMount",
+            "elasticfilesystem:ClientWrite",
+            "elasticfilesystem:DescribeMountTargets",
+          ],
+          resources: [this.efsFileSystem.fileSystemArn],
+        })
+      )
+    }
+    if (this.h5adBucket) {
+      this.h5adBucket.grantRead(agentRole)
+    }
+
     // Environment variables for the runtime
     const envVars: { [key: string]: string } = {
       AWS_REGION: stack.region,
@@ -339,6 +371,16 @@ export class BackendStack extends cdk.NestedStack {
       MEMORY_ID: memoryId,
       STACK_NAME: config.stack_name_base,
       GATEWAY_CREDENTIAL_PROVIDER_NAME: `${config.stack_name_base}-runtime-gateway-auth`, // Used by @requires_access_token decorator to look up the correct provider
+    }
+
+    // GenoPixel-specific env vars for EFS and S3 data access
+    if (this.efsFileSystem) {
+      envVars["EFS_FILESYSTEM_ID"] = this.efsFileSystem.fileSystemId
+      envVars["H5AD_BASE_DIR"] = "/mnt/genopixel/h5ad"
+      envVars["OUTPUT_DIR"] = "/mnt/genopixel/out"
+    }
+    if (this.h5adBucket) {
+      envVars["H5AD_S3_BUCKET"] = this.h5adBucket.bucketName
     }
 
     // Add claude-agent-sdk specific environment variable
@@ -951,47 +993,315 @@ export class BackendStack extends cdk.NestedStack {
   private buildNetworkConfiguration(config: AppConfig): agentcore.RuntimeNetworkConfiguration {
     if (config.backend.network_mode === "VPC") {
       const vpcConfig = config.backend.vpc
-      // vpc config is validated in ConfigManager, but guard here for type safety
-      if (!vpcConfig) {
-        throw new Error("backend.vpc configuration is required when network_mode is 'VPC'.")
+
+      if (vpcConfig) {
+        // Use the user-specified existing VPC.
+        // Import the user's existing VPC by ID.
+        // This performs a context lookup at synth time to resolve VPC attributes.
+        const vpc = ec2.Vpc.fromLookup(this, "ImportedVpc", {
+          vpcId: vpcConfig.vpc_id,
+        })
+
+        // Import the user-specified subnets by their IDs.
+        // These subnets must exist within the VPC specified above.
+        const subnets: ec2.ISubnet[] = vpcConfig.subnet_ids.map(
+          (subnetId: string, index: number) =>
+            ec2.Subnet.fromSubnetId(this, `ImportedSubnet${index}`, subnetId)
+        )
+
+        // Build the VPC config props for the AgentCore L2 construct.
+        // Security groups are optional — if not provided, the construct creates a default one.
+        const securityGroups =
+          vpcConfig.security_group_ids && vpcConfig.security_group_ids.length > 0
+            ? vpcConfig.security_group_ids.map(
+                (sgId: string, index: number) =>
+                  ec2.SecurityGroup.fromSecurityGroupId(this, `ImportedSG${index}`, sgId)
+              )
+            : undefined
+
+        const vpcConfigProps: agentcore.VpcConfigProps = {
+          vpc: vpc,
+          vpcSubnets: {
+            subnets: subnets,
+          },
+          securityGroups: securityGroups,
+        }
+
+        return agentcore.RuntimeNetworkConfiguration.usingVpc(this, vpcConfigProps)
       }
 
-      // Import the user's existing VPC by ID.
-      // This performs a context lookup at synth time to resolve VPC attributes.
-      const vpc = ec2.Vpc.fromLookup(this, "ImportedVpc", {
-        vpcId: vpcConfig.vpc_id,
+      // No vpc block in config.yaml — use the VPC that createVpcAndEfs() created.
+      if (!this.vpc) {
+        throw new Error(
+          "network_mode is 'VPC' but no VPC is available. " +
+          "Either provide backend.vpc in config.yaml or ensure createVpcAndEfs() ran first."
+        )
+      }
+
+      return agentcore.RuntimeNetworkConfiguration.usingVpc(this, {
+        vpc: this.vpc,
+        vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       })
-
-      // Import the user-specified subnets by their IDs.
-      // These subnets must exist within the VPC specified above.
-      const subnets: ec2.ISubnet[] = vpcConfig.subnet_ids.map(
-        (subnetId: string, index: number) =>
-          ec2.Subnet.fromSubnetId(this, `ImportedSubnet${index}`, subnetId)
-      )
-
-      // Build the VPC config props for the AgentCore L2 construct.
-      // Security groups are optional — if not provided, the construct creates a default one.
-      const securityGroups =
-        vpcConfig.security_group_ids && vpcConfig.security_group_ids.length > 0
-          ? vpcConfig.security_group_ids.map(
-              (sgId: string, index: number) =>
-                ec2.SecurityGroup.fromSecurityGroupId(this, `ImportedSG${index}`, sgId)
-            )
-          : undefined
-
-      const vpcConfigProps: agentcore.VpcConfigProps = {
-        vpc: vpc,
-        vpcSubnets: {
-          subnets: subnets,
-        },
-        securityGroups: securityGroups,
-      }
-
-      return agentcore.RuntimeNetworkConfiguration.usingVpc(this, vpcConfigProps)
     }
 
     // Default: public network mode
     return agentcore.RuntimeNetworkConfiguration.usingPublicNetwork()
+  }
+
+  /**
+   * Creates the VPC, EFS filesystem, and S3 data bucket for GenoPixel.
+   * Only runs when network_mode is "VPC". Stores infrastructure IDs in SSM and
+   * emits CloudFormation outputs so they can be pinned in config.yaml after first deploy.
+   */
+  private createVpcAndEfs(config: AppConfig): void {
+    if (config.backend.network_mode !== "VPC") return
+
+    const stack = cdk.Stack.of(this)
+
+    // VPC with 2 AZs, 1 NAT Gateway (cheapest option that still gives private subnets
+    // outbound internet access for Bedrock API calls).
+    // Hardcode AZs to avoid ec2:DescribeAvailabilityZones context lookup at synth time.
+    this.vpc = new ec2.Vpc(this, "Vpc", {
+      availabilityZones: [`${stack.region}a`, `${stack.region}b`],
+      natGateways: 1,
+      subnetConfiguration: [
+        {
+          name: "public",
+          subnetType: ec2.SubnetType.PUBLIC,
+          cidrMask: 24,
+        },
+        {
+          name: "private",
+          subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
+          cidrMask: 24,
+        },
+      ],
+    })
+
+    // Free gateway endpoints — traffic to S3/DynamoDB stays inside AWS backbone,
+    // avoiding NAT Gateway data charges for large h5ad transfers.
+    this.vpc.addGatewayEndpoint("S3GatewayEndpoint", {
+      service: ec2.GatewayVpcEndpointAwsService.S3,
+    })
+    this.vpc.addGatewayEndpoint("DynamoDbGatewayEndpoint", {
+      service: ec2.GatewayVpcEndpointAwsService.DYNAMODB,
+    })
+
+    // EFS security group: allow NFS (port 2049) inbound from anywhere in the VPC.
+    const efsSecurityGroup = new ec2.SecurityGroup(this, "EfsSecurityGroup", {
+      vpc: this.vpc,
+      description: "Allow NFS access to EFS from within the VPC",
+      allowAllOutbound: false,
+    })
+    efsSecurityGroup.addIngressRule(
+      ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
+      ec2.Port.tcp(2049),
+      "NFS inbound from VPC CIDR"
+    )
+
+    // EFS filesystem in private subnets.
+    // RETAIN on deletion so h5ad data is never lost by a stack destroy.
+    this.efsFileSystem = new efs.FileSystem(this, "EfsFileSystem", {
+      vpc: this.vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      securityGroup: efsSecurityGroup,
+      performanceMode: efs.PerformanceMode.GENERAL_PURPOSE,
+      throughputMode: efs.ThroughputMode.BURSTING,
+      encrypted: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      lifecyclePolicy: efs.LifecyclePolicy.AFTER_30_DAYS,
+    })
+
+    // Access point used by the agent Runtime container (Phase 4: Dockerfile entrypoint mounts
+    // this path via NFS). UID/GID 1000 matches the non-root user inside the container.
+    const runtimeAccessPoint = this.efsFileSystem.addAccessPoint("RuntimeAccessPoint", {
+      path: "/genopixel",
+      createAcl: {
+        ownerGid: "1000",
+        ownerUid: "1000",
+        permissions: "755",
+      },
+      posixUser: {
+        gid: "1000",
+        uid: "1000",
+      },
+    })
+
+    // S3 bucket for h5ad source files (2 TB; Intelligent-Tiering reduces cost for
+    // files not accessed frequently). Named with account ID to be globally unique.
+    this.h5adBucket = new s3.Bucket(this, "H5adDataBucket", {
+      bucketName: `genopixel-data-${stack.account}`,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      versioned: false,
+    })
+
+    // SSM parameters — printed as outputs and stored for use by Lambdas / agent.
+    new ssm.StringParameter(this, "VpcIdParam", {
+      parameterName: `/${config.stack_name_base}/vpc-id`,
+      stringValue: this.vpc.vpcId,
+      description: "VPC ID created by CDK — copy to config.yaml vpc_id to pin it",
+    })
+
+    new ssm.StringParameter(this, "PrivateSubnetIdsParam", {
+      parameterName: `/${config.stack_name_base}/private-subnet-ids`,
+      stringValue: cdk.Fn.join(",", this.vpc.privateSubnets.map(s => s.subnetId)),
+      description: "Private subnet IDs — copy to config.yaml subnet_ids to pin them",
+    })
+
+    new ssm.StringParameter(this, "EfsFilesystemIdParam", {
+      parameterName: `/${config.stack_name_base}/efs-filesystem-id`,
+      stringValue: this.efsFileSystem.fileSystemId,
+      description: "EFS Filesystem ID for h5ad data",
+    })
+
+    new ssm.StringParameter(this, "EfsAccessPointIdParam", {
+      parameterName: `/${config.stack_name_base}/efs-access-point-id`,
+      stringValue: runtimeAccessPoint.accessPointId,
+      description: "EFS Access Point ID for the agent Runtime container",
+    })
+
+    new ssm.StringParameter(this, "H5adBucketNameParam", {
+      parameterName: `/${config.stack_name_base}/h5ad-bucket`,
+      stringValue: this.h5adBucket.bucketName,
+      description: "S3 bucket for h5ad source files",
+    })
+
+    // CloudFormation outputs — copy these to config.yaml after first deploy to pin resources.
+    new cdk.CfnOutput(this, "VpcId", {
+      value: this.vpc.vpcId,
+      description: "VPC ID — copy to config.yaml backend.vpc.vpc_id to pin",
+    })
+
+    new cdk.CfnOutput(this, "PrivateSubnetIds", {
+      value: cdk.Fn.join(",", this.vpc.privateSubnets.map(s => s.subnetId)),
+      description: "Private subnet IDs — copy to config.yaml backend.vpc.subnet_ids to pin",
+    })
+
+    new cdk.CfnOutput(this, "EfsFilesystemId", {
+      value: this.efsFileSystem.fileSystemId,
+      description: "EFS Filesystem ID for h5ad data",
+    })
+
+    new cdk.CfnOutput(this, "H5adBucketName", {
+      value: this.h5adBucket.bucketName,
+      description: "S3 bucket for h5ad source files — use this in .env H5AD_S3_BUCKET",
+    })
+  }
+
+  /**
+   * Creates the GenoPixel dataset catalog API: DynamoDB active-dataset table,
+   * a single Lambda that handles all catalog routes, and an API Gateway with
+   * Cognito authorizer.
+   *
+   * Routes:
+   *   GET  /api/catalog                    → list datasets (from Excel metadata)
+   *   GET  /api/catalog/active-dataset     → current active dataset for session
+   *   GET  /api/catalog/{row}              → single dataset detail
+   *   POST /api/catalog/{row}/analyze      → set active dataset for session
+   *
+   * Phase 2 ships stub handlers; Phase 3 ports the full gp_catalog_api.py logic.
+   */
+  private createCatalogApi(config: AppConfig, frontendUrl: string): void {
+    // DynamoDB table: active dataset selection keyed by user session ID.
+    // TTL column auto-expires stale sessions after 24h.
+    const activeDatasetTable = new dynamodb.Table(this, "ActiveDatasetTable", {
+      tableName: `${config.stack_name_base}-active-dataset`,
+      partitionKey: {
+        name: "sessionId",
+        type: dynamodb.AttributeType.STRING,
+      },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      timeToLiveAttribute: "ttl",
+    })
+
+    // Single Lambda handles all catalog routes (routing done inside the handler).
+    const catalogLambda = new PythonFunction(this, "CatalogLambda", {
+      functionName: `${config.stack_name_base}-catalog`,
+      runtime: lambda.Runtime.PYTHON_3_13,
+      architecture: lambda.Architecture.ARM_64,
+      entry: path.join(__dirname, "..", "lambdas", "genopixel-catalog"), // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+      handler: "handler",
+      environment: {
+        ACTIVE_DATASET_TABLE: activeDatasetTable.tableName,
+        CORS_ALLOWED_ORIGINS: `${frontendUrl},http://localhost:3000`,
+      },
+      timeout: cdk.Duration.seconds(30),
+      logGroup: new logs.LogGroup(this, "CatalogLambdaLogGroup", {
+        logGroupName: `/aws/lambda/${config.stack_name_base}-catalog`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
+    })
+
+    activeDatasetTable.grantReadWriteData(catalogLambda)
+
+    // API Gateway (no caching for catalog — datasets change as users load h5ad files)
+    const catalogApi = new apigateway.RestApi(this, "CatalogApi", {
+      restApiName: `${config.stack_name_base}-catalog-api`,
+      description: "GenoPixel dataset catalog API",
+      defaultCorsPreflightOptions: {
+        allowOrigins: [frontendUrl, "http://localhost:3000"],
+        allowMethods: ["GET", "POST", "OPTIONS"],
+        allowHeaders: ["Content-Type", "Authorization"],
+      },
+      deployOptions: {
+        stageName: "prod",
+        loggingLevel: apigateway.MethodLoggingLevel.INFO,
+        metricsEnabled: true,
+        accessLogDestination: new apigateway.LogGroupLogDestination(
+          new logs.LogGroup(this, "CatalogApiAccessLogGroup", {
+            logGroupName: `/aws/apigateway/${config.stack_name_base}-catalog-api-access`,
+            retention: logs.RetentionDays.ONE_WEEK,
+            removalPolicy: cdk.RemovalPolicy.DESTROY,
+          })
+        ),
+        accessLogFormat: apigateway.AccessLogFormat.jsonWithStandardFields(),
+      },
+    })
+
+    const authorizer = new apigateway.CognitoUserPoolsAuthorizer(this, "CatalogApiAuthorizer", {
+      cognitoUserPools: [this.userPool],
+      identitySource: "method.request.header.Authorization",
+      authorizerName: `${config.stack_name_base}-catalog-authorizer`,
+    })
+
+    const integration = new apigateway.LambdaIntegration(catalogLambda)
+    const authOptions: apigateway.MethodOptions = {
+      authorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    }
+
+    const apiRoot = catalogApi.root.addResource("api")
+    const catalogRoot = apiRoot.addResource("catalog")
+
+    // GET /api/catalog
+    catalogRoot.addMethod("GET", integration, authOptions)
+
+    // GET /api/catalog/active-dataset  (static path — must be before {row})
+    catalogRoot.addResource("active-dataset").addMethod("GET", integration, authOptions)
+
+    // GET /api/catalog/{row}
+    const rowResource = catalogRoot.addResource("{row}")
+    rowResource.addMethod("GET", integration, authOptions)
+
+    // POST /api/catalog/{row}/analyze
+    rowResource.addResource("analyze").addMethod("POST", integration, authOptions)
+
+    this.catalogApiUrl = catalogApi.url
+
+    new ssm.StringParameter(this, "CatalogApiUrlParam", {
+      parameterName: `/${config.stack_name_base}/catalog-api-url`,
+      stringValue: catalogApi.url,
+      description: "GenoPixel Catalog API URL",
+    })
+
+    new cdk.CfnOutput(this, "CatalogApiUrl", {
+      value: catalogApi.url,
+      description: "GenoPixel Catalog API URL",
+    })
   }
 
   /**

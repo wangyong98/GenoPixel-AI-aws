@@ -1,0 +1,2 @@
+# Phase 2 stubs have no dependencies beyond the Lambda runtime.
+# Phase 3 will add: openpyxl pandas boto3
