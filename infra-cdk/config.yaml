@@ -1,4 +1,4 @@
-stack_name_base: genopixel-aws
+stack_name_base: genopixel
 
 # Auto-creates admin user and emails temporary credentials on first deploy.
 admin_user_email: wangyong98@hotmail.com
@@ -9,6 +9,12 @@ backend:
   deployment_type: docker        # required: native C libs (HDF5, OpenBLAS) need a container
   network_mode: VPC              # required: AgentCore Runtime must reach EFS
 
-  # vpc block is intentionally absent — CDK creates the VPC automatically.
-  # After first deploy, the VPC/subnet IDs are written to SSM and printed
-  # as CloudFormation outputs; fill them in here if you ever need to pin them.
+  # VPC and subnets pinned from first deploy (2026-04-17).
+  # EFS filesystem: fs-09aa96b697a5a2bb0  (stored in SSM /genopixel/efs-filesystem-id)
+  # S3 data bucket: genopixel-data-714262955850
+  # Catalog API:    https://quuwq6albh.execute-api.us-east-1.amazonaws.com/prod/
+  vpc:
+    vpc_id: vpc-0ed39ba0c59ad7747
+    subnet_ids:
+      - subnet-0efec5aa239ec6b60
+      - subnet-00cf6280dbff25d06
