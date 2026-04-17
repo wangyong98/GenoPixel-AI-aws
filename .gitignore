@@ -54,3 +54,20 @@ Thumbs.db
 .gstack/
 .claude/
 __pycache__/
+
+# AWS / CDK
+cdk.out/
+infra-cdk/node_modules/
+infra-cdk/cdk.context.json
+frontend/public/aws-exports.json
+frontend/node_modules/
+frontend/dist/
+
+# Terraform
+infra-terraform/.terraform/
+infra-terraform/*.tfstate
+infra-terraform/*.tfstate.backup
+infra-terraform/*.tfvars
+
+# Python
+.venv/

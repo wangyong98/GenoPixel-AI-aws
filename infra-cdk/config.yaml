@@ -1,0 +1,20 @@
+stack_name_base: genopixel-aws
+
+# Auto-creates admin user and emails temporary credentials on first deploy.
+admin_user_email: wangyong98@gmail.com
+
+backend:
+  # strands-* prefix → Strands parser in the React frontend
+  pattern: strands-single-agent # will be renamed to strands-genopixel-agent in Phase 4
+  deployment_type: docker        # required: native C libs (HDF5, OpenBLAS) need a container
+  network_mode: VPC              # required: AgentCore Runtime must reach EFS
+
+  # VPC configuration — CDK will create a new VPC when vpc_id is left blank.
+  # After first deploy, fill in the created VPC/subnet IDs for subsequent deploys.
+  # vpc:
+  #   vpc_id: vpc-xxxxxxxxxxxxxxxxx
+  #   subnet_ids:
+  #     - subnet-xxxxxxxxxxxxxxxxx
+  #     - subnet-xxxxxxxxxxxxxxxxx
+  #   security_group_ids:  # optional — CDK creates a default SG if omitted
+  #     - sg-xxxxxxxxxxxxxxxxx

@@ -1,4 +1,0 @@
-interface:
-  display_name: "GenoPixel Tool Usage"
-  short_description: "Use only current GenoPixel plotting tools"
-  default_prompt: "Use $genopixel-tool-usage to decide which GenoPixel plotting tool to call."

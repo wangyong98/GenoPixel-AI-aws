@@ -1,81 +1,7 @@
+# Local development only — runs the GenoPixel tool server for testing.
+# Open WebUI and Caddy are not part of the AWS architecture.
+# In production, the tool server logic runs inside the AgentCore Runtime container.
 services:
-  caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    ports:
-      - '80:80'
-    environment:
-      - UPSTREAM=http://openwebui:8080
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - $PWD:/data:ro
-    depends_on:
-      openwebui:
-        condition: service_healthy
-      genopixel_tool_server:
-        condition: service_healthy
-    networks:
-      - agentmendel-network
-  openwebui:
-    depends_on:
-      genopixel_tool_server:
-        condition: service_healthy
-    image: ghcr.io/open-webui/open-webui:main
-    pull_policy: always
-    healthcheck:
-      test: ["CMD", "curl", "-f", "${CHAT_HEALTH_SERV_BASEURL}"]
-      interval: 30s
-      timeout: 10s
-      retries: 10
-      start_period: 300s
-    restart: always
-    labels:
-      autoheal-app: true
-    ports:
-      - "3000:8080"
-    environment:
-      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY}
-      ENABLE_SIGNUP: "False"
-      WEBUI_ADMIN_EMAIL: ${WEBUI_ADMIN_EMAIL}
-      WEBUI_ADMIN_PASSWORD: ${WEBUI_ADMIN_PASS}
-      WEBUI_ADMIN_NAME: ${WEBUI_ADMIN_NAME}
-      DEFAULT_USER_ROLE: '"user"'
-      ENABLE_MEMORIES: "True"
-      USER_PERMISSIONS_FEATURES_MEMORIES : "True"
-      ENABLE_API_KEYS: "True"
-      USER_PERMISSIONS_FEATURES_API_KEYS: "True"
-      ADMIN_EMAIL: ${WEBUI_ADMIN_EMAIL}
-      ENV: '"dev"'
-      ENABLE_PERSISTENT_CONFIG: "True"
-      WEBUI_BANNERS: ${WEBUI_BANNERS}
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      ENABLE_CODE_EXECUTION: "False"
-      ENABLE_CODE_INTERPRETER: "False"
-      WEBUI_NAME: "Bioinformatics Agent Portal"
-      TOOL_SERVER_CONNECTIONS: |-
-        [
-          {
-            "type": "openapi",
-            "url": "http://${GENOPIXEL_TOOL_HOST}:${GENOPIXEL_TOOL_PORT}",
-            "spec_type": "url",
-            "spec": "",
-            "path": "openapi.json",
-            "auth_type": "bearer",
-            "key": "${GENOPIXEL_TOOL_API_KEY}",
-            "info": {
-              "id": "",
-              "name": "genopixel-tool",
-              "description": "Plot the currently loaded GenoPixel dataset with generate_scanpy_plot. Use this for UMAP and other Scanpy visualizations after the dataset has been loaded from the browser."
-            },
-            "config": {}
-          }
-        ]
-      CORS_ALLOW_ORIGIN: "*"
-    volumes:
-      - open-webui:/app/backend/data
-    networks:
-      - agentmendel-network
-
   genopixel_tool_server:
     image: genopixel:latest
     build:
@@ -112,9 +38,7 @@ services:
       - $PWD:/data
       - $PWD:/code
       - /Volumes/cx10/Single_cell_data_0117_2026:/Volumes/cx10/Single_cell_data_0117_2026:ro
-    restart: always
-    labels:
-      autoheal-app: true
+    restart: unless-stopped
     environment:
       - PORT=${GENOPIXEL_TOOL_PORT}
       - API_KEY=${GENOPIXEL_TOOL_API_KEY}
@@ -123,17 +47,10 @@ services:
       - OUTPUT_DIR=${GENOPIXEL_OUTPUT_DIR}
       - DEFAULT_BACKED=${GENOPIXEL_DEFAULT_BACKED}
       - MPLBACKEND=Agg
-    networks:
-      - agentmendel-network
     ports:
       - "${GENOPIXEL_TOOL_PORT}:${GENOPIXEL_TOOL_PORT}"
     command: sh -c 'python -m uvicorn gp_catalog_api:app --host 0.0.0.0 --port $$PORT --app-dir /code/Docker/genopixel'
-    
-volumes:
-  open-webui:
-    driver: local
 
 networks:
-  agentmendel-network:
+  default:
     driver: bridge
-    name: agentmendel-network

@@ -1,4 +1,0 @@
-interface:
-  display_name: "GenoPixel Plot Formatting"
-  short_description: "Format GenoPixel plot outputs exactly"
-  default_prompt: "Use $genopixel-plot-formatting to format GenoPixel plot tool results."
