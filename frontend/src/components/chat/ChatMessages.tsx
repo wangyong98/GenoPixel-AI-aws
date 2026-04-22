@@ -26,7 +26,10 @@ export function ChatMessages({
       }`}
     >
       {messages.length === 0 ? (
-        <div className="flex items-center justify-center h-full text-gray-400">
+        <div
+          className="flex items-center justify-center h-full text-sm"
+          style={{ color: "#5f6d75" }}
+        >
           Start a new conversation
         </div>
       ) : (

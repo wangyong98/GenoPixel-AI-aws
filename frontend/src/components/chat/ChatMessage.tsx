@@ -71,16 +71,23 @@ export function ChatMessage({
       <div
         className={`max-w-[80%] break-words ${
           message.role === "user"
-            ? "p-3 rounded-lg bg-gray-800 text-white rounded-br-none whitespace-pre-wrap"
-            : "text-gray-800"
+            ? "p-3 rounded-lg rounded-br-none whitespace-pre-wrap"
+            : ""
         }`}
+        style={
+          message.role === "user"
+            ? { background: "#1a3550", color: "#ffffff" }
+            : { color: "#1e2d3d" }
+        }
       >
         {message.role === "assistant" ? renderAssistantContent() : message.content}
       </div>
 
       {/* Timestamp and Feedback buttons for assistant messages */}
       <div className="flex items-center gap-2 mt-1 px-1">
-        <div className="text-xs text-gray-500">{formatTime(message.timestamp)}</div>
+        <div className="text-xs" style={{ color: "#5f6d75" }}>
+          {formatTime(message.timestamp)}
+        </div>
 
         {/* Show feedback buttons only for assistant messages with content */}
         {message.role === "assistant" && message.content && (
@@ -88,7 +95,10 @@ export function ChatMessage({
             <button
               onClick={() => handleFeedbackClick("positive")}
               disabled={feedbackSubmitted}
-              className="p-1 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="p-1 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{ color: "#5f6d75" }}
+              onMouseEnter={e => (e.currentTarget.style.color = "#0d6f68")}
+              onMouseLeave={e => (e.currentTarget.style.color = "#5f6d75")}
               aria-label="Positive feedback"
               title="Good response"
             >
@@ -97,14 +107,19 @@ export function ChatMessage({
             <button
               onClick={() => handleFeedbackClick("negative")}
               disabled={feedbackSubmitted}
-              className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="p-1 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{ color: "#5f6d75" }}
+              onMouseEnter={e => (e.currentTarget.style.color = "#b67b2e")}
+              onMouseLeave={e => (e.currentTarget.style.color = "#5f6d75")}
               aria-label="Negative feedback"
               title="Bad response"
             >
               <ThumbsDown size={14} />
             </button>
             {feedbackSubmitted && (
-              <span className="text-xs text-gray-500 ml-1">Thanks for your feedback!</span>
+              <span className="text-xs ml-1" style={{ color: "#5f6d75" }}>
+                Thanks for your feedback!
+              </span>
             )}
           </div>
         )}

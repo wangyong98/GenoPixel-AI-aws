@@ -3,12 +3,22 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import ChatInterface from "@/components/chat/ChatInterface"
+import type { ChatControls } from "@/components/chat/ChatInterface"
+import { AppSidebar } from "@/components/layout/AppSidebar"
 import { Button } from "@/components/ui/button"
 import { useAuth } from "@/hooks/useAuth"
 import { GlobalContextProvider } from "@/app/context/GlobalContext"
+import { useState } from "react"
 
 export default function ChatPage() {
   const { isAuthenticated, signIn } = useAuth()
+  const [chatControls, setChatControls] = useState<ChatControls>({
+    onNewChat: () => {},
+    canStartNewChat: false,
+    recentChats: [],
+    currentSessionId: "",
+    onSelectChat: () => {},
+  })
 
   if (!isAuthenticated) {
     return (
@@ -21,8 +31,19 @@ export default function ChatPage() {
 
   return (
     <GlobalContextProvider>
-      <div className="relative h-screen">
-        <ChatInterface />
+      <div className="flex h-screen">
+        <AppSidebar
+          activeTab="chat"
+          showChatActions
+          onNewChat={chatControls.onNewChat}
+          canStartNewChat={chatControls.canStartNewChat}
+          recentChats={chatControls.recentChats}
+          currentSessionId={chatControls.currentSessionId}
+          onSelectChat={chatControls.onSelectChat}
+        />
+        <div className="relative flex-1 min-w-0 overflow-hidden">
+          <ChatInterface onChatControlsChange={setChatControls} />
+        </div>
       </div>
     </GlobalContextProvider>
   )

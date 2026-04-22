@@ -6,5 +6,53 @@
     "us-east-1d",
     "us-east-1e",
     "us-east-1f"
-  ]
+  ],
+  "vpc-provider:account=714262955850:filter.vpc-id=vpc-0ed39ba0c59ad7747:region=us-east-1:returnAsymmetricSubnets=true": {
+    "vpcId": "vpc-0ed39ba0c59ad7747",
+    "vpcCidrBlock": "10.0.0.0/16",
+    "ownerAccountId": "714262955850",
+    "availabilityZones": [],
+    "subnetGroups": [
+      {
+        "name": "public",
+        "type": "Public",
+        "subnets": [
+          {
+            "subnetId": "subnet-07b364431a2c7740b",
+            "cidr": "10.0.0.0/24",
+            "availabilityZone": "us-east-1a",
+            "routeTableId": "rtb-026ee4c670386d159"
+          },
+          {
+            "subnetId": "subnet-07d1edf602ca9a582",
+            "cidr": "10.0.1.0/24",
+            "availabilityZone": "us-east-1b",
+            "routeTableId": "rtb-02c393094e499907c"
+          }
+        ]
+      },
+      {
+        "name": "private",
+        "type": "Private",
+        "subnets": [
+          {
+            "subnetId": "subnet-0efec5aa239ec6b60",
+            "cidr": "10.0.2.0/24",
+            "availabilityZone": "us-east-1a",
+            "routeTableId": "rtb-0513c53c0581d6e44"
+          },
+          {
+            "subnetId": "subnet-00cf6280dbff25d06",
+            "cidr": "10.0.3.0/24",
+            "availabilityZone": "us-east-1b",
+            "routeTableId": "rtb-02a91204dfa64e117"
+          }
+        ]
+      }
+    ]
+  },
+  "hosted-zone:account=714262955850:domainName=genopixel.com:region=us-east-1": {
+    "Id": "/hostedzone/Z004585612FBMBE3KVPPR",
+    "Name": "genopixel.com."
+  }
 }

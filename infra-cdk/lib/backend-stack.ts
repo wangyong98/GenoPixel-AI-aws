@@ -29,6 +29,8 @@ export interface BackendStackProps extends cdk.NestedStackProps {
   frontendUrl: string
 }
 
+const DEFAULT_BEDROCK_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+
 export class BackendStack extends cdk.NestedStack {
   public readonly userPoolId: string
   public readonly userPoolClientId: string
@@ -45,6 +47,7 @@ export class BackendStack extends cdk.NestedStack {
   private vpc?: ec2.Vpc
   private efsFileSystem?: efs.FileSystem
   private h5adBucket?: s3.Bucket
+  private activeDatasetTable?: dynamodb.Table
   public catalogApiUrl: string = ""
 
   constructor(scope: Construct, id: string, props: BackendStackProps) {
@@ -73,6 +76,10 @@ export class BackendStack extends cdk.NestedStack {
 
     // Create Machine-to-Machine authentication components
     this.createMachineAuthentication(props.config)
+
+    // Create active-dataset DynamoDB table early so the Runtime can read it.
+    // (createCatalogApi also uses this.activeDatasetTable — no duplicate resource created.)
+    this.activeDatasetTable = this.createActiveDatasetTable(props.config)
 
     // DEPLOYMENT ORDER EXPLANATION:
     // 1. Cognito User Pool & Client (created in separate CognitoStack)
@@ -343,6 +350,17 @@ export class BackendStack extends cdk.NestedStack {
       })
     )
 
+    // Some Anthropic Bedrock models require AWS Marketplace subscription checks.
+    // Granting these actions lets the runtime principal pass subscription validation.
+    agentRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "AwsMarketplaceSubscriptionAccess",
+        effect: iam.Effect.ALLOW,
+        actions: ["aws-marketplace:ViewSubscriptions", "aws-marketplace:Subscribe"],
+        resources: ["*"],
+      })
+    )
+
     // Grant agent access to EFS and S3 data bucket when running in VPC mode
     if (this.efsFileSystem) {
       this.efsFileSystem.grantRootAccess(agentRole)
@@ -363,6 +381,10 @@ export class BackendStack extends cdk.NestedStack {
     if (this.h5adBucket) {
       this.h5adBucket.grantRead(agentRole)
     }
+    // Allow agent to read user's active-dataset selection from DynamoDB
+    if (this.activeDatasetTable) {
+      this.activeDatasetTable.grantReadData(agentRole)
+    }
 
     // Environment variables for the runtime
     const envVars: { [key: string]: string } = {
@@ -370,6 +392,7 @@ export class BackendStack extends cdk.NestedStack {
       AWS_DEFAULT_REGION: stack.region,
       MEMORY_ID: memoryId,
       STACK_NAME: config.stack_name_base,
+      BEDROCK_MODEL_ID: config.backend.model_id || DEFAULT_BEDROCK_MODEL_ID,
       GATEWAY_CREDENTIAL_PROVIDER_NAME: `${config.stack_name_base}-runtime-gateway-auth`, // Used by @requires_access_token decorator to look up the correct provider
     }
 
@@ -381,6 +404,10 @@ export class BackendStack extends cdk.NestedStack {
     }
     if (this.h5adBucket) {
       envVars["H5AD_S3_BUCKET"] = this.h5adBucket.bucketName
+    }
+    // Active-dataset table — lets the agent pre-load the user's selected dataset
+    if (this.activeDatasetTable) {
+      envVars["ACTIVE_DATASET_TABLE"] = this.activeDatasetTable.tableName
     }
 
     // Add claude-agent-sdk specific environment variable
@@ -1203,10 +1230,8 @@ export class BackendStack extends cdk.NestedStack {
    *
    * Phase 2 ships stub handlers; Phase 3 ports the full gp_catalog_api.py logic.
    */
-  private createCatalogApi(config: AppConfig, frontendUrl: string): void {
-    // DynamoDB table: active dataset selection keyed by user session ID.
-    // TTL column auto-expires stale sessions after 24h.
-    const activeDatasetTable = new dynamodb.Table(this, "ActiveDatasetTable", {
+  private createActiveDatasetTable(config: AppConfig): dynamodb.Table {
+    return new dynamodb.Table(this, "ActiveDatasetTable", {
       tableName: `${config.stack_name_base}-active-dataset`,
       partitionKey: {
         name: "sessionId",
@@ -1216,6 +1241,12 @@ export class BackendStack extends cdk.NestedStack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       timeToLiveAttribute: "ttl",
     })
+  }
+
+  private createCatalogApi(config: AppConfig, frontendUrl: string): void {
+    // Reuse the table created in createActiveDatasetTable (hoisted before the Runtime
+    // so the Runtime's IAM role can be granted read access at synth time).
+    const activeDatasetTable = this.activeDatasetTable!
 
     // Single Lambda handles all catalog routes (routing done inside the handler).
     const catalogLambda = new PythonFunction(this, "CatalogLambda", {
@@ -1227,6 +1258,12 @@ export class BackendStack extends cdk.NestedStack {
       environment: {
         ACTIVE_DATASET_TABLE: activeDatasetTable.tableName,
         CORS_ALLOWED_ORIGINS: `${frontendUrl},http://localhost:3000`,
+        ...(this.h5adBucket
+          ? {
+              H5AD_S3_BUCKET: this.h5adBucket.bucketName,
+              METADATA_XLSX_S3_KEY: "metadata/metadata.xlsx",
+            }
+          : {}),
       },
       timeout: cdk.Duration.seconds(30),
       logGroup: new logs.LogGroup(this, "CatalogLambdaLogGroup", {
@@ -1237,6 +1274,11 @@ export class BackendStack extends cdk.NestedStack {
     })
 
     activeDatasetTable.grantReadWriteData(catalogLambda)
+
+    // Allow the catalog Lambda to read the metadata Excel and validate h5ad keys
+    if (this.h5adBucket) {
+      this.h5adBucket.grantRead(catalogLambda)
+    }
 
     // API Gateway (no caching for catalog — datasets change as users load h5ad files)
     const catalogApi = new apigateway.RestApi(this, "CatalogApi", {

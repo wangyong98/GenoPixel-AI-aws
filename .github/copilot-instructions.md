@@ -1,56 +1,81 @@
-# AI Agent Instructions – GenoPixel + Docker Compose
+# AI Agent Instructions – GenoPixel AI AWS
 
-Purpose and architecture
-- Native FastAPI GenoPixel runtime with Scanpy for catalog browsing and plotting.
-- Docker Compose stack for Open WebUI and a Caddy reverse proxy.
+## Purpose and architecture
 
-Key files
-- GenoPixel image: Docker/genopixel/Dockerfile
-- GenoPixel catalog API: Docker/genopixel/gp_catalog_api.py
-- Compose stack: docker-compose.yaml
-- Reverse proxy: Caddyfile (serves /assets from repo out/)
+GenoPixel AI is a single-cell genomics analysis assistant deployed entirely on AWS. Users browse datasets through a React frontend (Amplify), select one, and chat with an AI agent that loads and analyses the h5ad file using Scanpy.
 
-Build images
-- GenoPixel: built automatically by compose as `genopixel:latest`; rebuild with `docker compose build genopixel_tool_server`
+There is no local dev stack. All runtime components are AWS services.
 
-Environment (.env at repo root)
-- Required for Open WebUI: `WEBUI_ADMIN_EMAIL`, `WEBUI_ADMIN_PASS`, `WEBUI_ADMIN_NAME`, `WEBUI_HOST=localhost`, `WEBUI_BANNERS=[]`
-- Optional: `CHAT_HEALTH_SERV_BASEURL=http://openwebui:8080/health`
-- GenoPixel tool server: `GENOPIXEL_TOOL_HOST=genopixel_tool_server`, `GENOPIXEL_TOOL_PORT=18889`, `GENOPIXEL_TOOL_API_KEY=<key>`, `GENOPIXEL_TOOL_HEALTH_SERV_BASEURL=http://genopixel_tool_server:18889/health`
+## Key files
 
-Compose launch
-- Start web UI (will also start tool servers due to dependencies): `docker compose up -d caddy openwebui`
-- Start everything: `docker compose up -d`
-- Access Open WebUI via proxy at http://localhost (port 80) or directly at http://localhost:3000
-- Static assets: Caddy serves repo `out/` at `http://localhost/assets/...`
+- Agent entrypoint: `patterns/strands-genopixel-agent/basic_agent.py`
+- Agent tools: `patterns/strands-genopixel-agent/tools/gp_tools.py`
+- Agent skills (system prompt fragments): `patterns/strands-genopixel-agent/skills/`
+- Shared Python modules (copied into container at build): `Docker/genopixel/`
+- Catalog Lambda: `infra-cdk/lambdas/genopixel-catalog/index.py`
+- CDK infrastructure: `infra-cdk/lib/`
+- Deployment config: `infra-cdk/config.yaml`
+- Frontend: `frontend/`
+- Metadata Excel: `data/cellxgene_HCA_final_webUI.xlsx`
 
-Tool server details
-- Health: `POST /health` with `Authorization: Bearer <API_KEY>` and JSON body `{}`.
-- OpenAPI: `/openapi.json` (bearer may be required depending on config).
-- In Open WebUI, the connection is named "genopixel-tool".
+## AWS services
 
-Quick checks (host)
+- **Cognito** — user authentication
+- **Amplify** — React frontend hosting
+- **AgentCore Runtime** — agent Docker container (Strands + Claude Haiku via Bedrock)
+- **AgentCore Gateway** — MCP tool routing into the agent
+- **AgentCore Memory** — short-term conversation history per session
+- **Lambda + API Gateway** — catalog API (dataset list, active-dataset selection)
+- **DynamoDB** — stores each user's active dataset selection (24-hour TTL)
+- **EFS** — h5ad files mounted into the agent container at `/mnt/genopixel/h5ad`
+- **S3** — h5ad fallback storage + metadata Excel at `metadata/metadata.xlsx`
+
+## Deploy
+
 ```bash
-# GenoPixel server health
-curl -X POST -H "Authorization: Bearer ${GENOPIXEL_TOOL_API_KEY}" -H "Content-Type: application/json" \
-  -d '{}' http://localhost:${GENOPIXEL_TOOL_PORT}/health | head -c 200
-
-# Sample GenoPixel tool
-curl -X POST -H "Authorization: Bearer ${GENOPIXEL_TOOL_API_KEY}" -H "Content-Type: application/json" \
-  -d '{"plot_type":"umap","color_json":"[\"cell_type\"]","genes_json":"[]"}' \
-  http://localhost:${GENOPIXEL_TOOL_PORT}/generate_scanpy_plot | jq
+cd infra-cdk
+npm install
+npx cdk deploy --all
 ```
 
-Troubleshooting
-- WEBUI banners JSON error: If logs show a JSONDecodeError for `WEBUI_BANNERS`, set it to a valid JSON array in `.env` (e.g., `WEBUI_BANNERS=[]`) and restart `openwebui`.
-- Tool server unhealthy:
-  - Ensure `.env` API keys are set and healthchecks send an authorized POST with `{}`.
-  - Interpreting responses:
-    - 401 Unauthorized → API key missing/mismatch
-    - 422 Unprocessable Content → missing JSON body; add `-H Content-Type` and `-d '{}'`
-    - 405 Method Not Allowed → wrong HTTP method; use POST
-- Logs
-  - `docker compose logs --no-color --tail=100 genopixel_tool_server`
-  - `docker compose logs --no-color --tail=100 openwebui`
-- Rebuild after changes
-  - GenoPixel server: `docker compose build genopixel_tool_server && docker compose up -d`
+After deploy, upload the metadata Excel:
+
+```bash
+aws s3 cp data/cellxgene_HCA_final_webUI.xlsx s3://<H5AD_S3_BUCKET>/metadata/metadata.xlsx
+```
+
+## Agent behaviour
+
+The agent is a Strands `Agent` wrapping Claude Haiku on Bedrock. On each invocation it:
+
+1. Reads the user's active dataset selection from DynamoDB (`_try_preload_active_dataset`)
+2. Stores the selection in `RUNTIME_STATE` as a pending selection (even if the h5ad is not yet in memory)
+3. Creates the agent with the full system prompt (base + skills + dataset context)
+4. Streams the response back via `BedrockAgentCoreApp`
+
+Skills in `patterns/strands-genopixel-agent/skills/` are loaded at module import time and appended to the system prompt. Editing a skill requires a container redeploy.
+
+## Dataset flow
+
+1. User selects a dataset in the Datasets tab → frontend calls `POST /api/catalog/{row}/analyze`
+2. Catalog Lambda writes the selection to DynamoDB (key: Cognito `sub`)
+3. User sends a chat message → agent reads DynamoDB, pre-loads h5ad from EFS (or S3 fallback)
+4. `get_active_dataset_info()` returns the loaded dataset or a pending selection with load instructions
+5. Agent calls `load_dataset()` if the h5ad is not yet in memory
+
+## Metadata Excel
+
+Two sheets:
+
+- **all** — parent datasets: `title`, `author`, `file` (h5ad filename), `tissue`, `disease`, `organism`, `project`, `journal`, `cell_counts`, `merged`, `year`, `doi`, `cellxgene_doi`
+- **multiple** — variant rows linked to parents via `cellxgene_doi`
+
+The catalog Lambda caches the parsed result in memory and invalidates on S3 ETag change. Uploading a new Excel to S3 is sufficient to update the catalog — no Lambda redeploy needed.
+
+## Troubleshooting
+
+- **Catalog 503**: metadata Excel not uploaded to S3, or `H5AD_S3_BUCKET` env var missing on the Lambda
+- **Agent "no active dataset"**: user hasn't clicked "Analyze this data", or DynamoDB TTL expired
+- **h5ad not found**: filename in Excel `file` column doesn't match any file on EFS or S3
+- **CloudFormation errors**: check the Events tab for the failing stack in the AWS Console
+- **Container cold start slow (~20s)**: normal — Scanpy and scientific Python imports are heavy; container stays warm between requests

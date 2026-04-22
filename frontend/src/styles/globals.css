@@ -9,7 +9,8 @@
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
   --color-brand-dark: hsl(197, 37%, 24%);
-  --color-brand-teal: hsl(173, 58%, 39%);
+  --color-brand-teal: hsl(176, 79%, 24%);
+  --color-brand-amber: hsl(35, 60%, 35%);
   --color-brand-lime: hsl(43, 74%, 66%);
   --color-brand-yellow: hsl(27, 87%, 67%);
   --color-brand-orange: hsl(12, 76%, 61%);
@@ -49,48 +50,46 @@
 }
 
 :root {
-  --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --brand-dark: 197 37% 24%;
-  --brand-teal: 173 58% 39%;
-  --brand-lime: 43 74% 66%;
-  --brand-yellow: 27 87% 67%;
-  --brand-orange: 12 76% 61%;
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
+  --radius: 0.5rem;
+
+  /* Light clinical palette — cool neutral, teal primary, navy text */
+  --background: #f1f5f8;
+  --foreground: #1e2d3d;
+  --card: #ffffff;
+  --card-foreground: #1e2d3d;
+  --popover: #ffffff;
+  --popover-foreground: #1e2d3d;
+  --primary: #0d6f68;
+  --primary-foreground: #ffffff;
+  --secondary: #e8eef3;
+  --secondary-foreground: #1e2d3d;
+  --muted: #edf1f5;
+  --muted-foreground: #5b7389;
+  --accent: #e4f2f1;
+  --accent-foreground: #0d6f68;
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  --border: #dce4ea;
+  --input: #dce4ea;
+  --ring: #0d6f68;
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
 
-  /* Font variables for Geist fonts */
-  --font-geist-sans:
-    "Geist Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-geist-mono: "Geist Mono", "Courier New", Consolas, Monaco, monospace;
+  /* Sidebar — white with teal accent */
+  --sidebar: #ffffff;
+  --sidebar-foreground: #1e2d3d;
+  --sidebar-primary: #0d6f68;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #edf1f5;
+  --sidebar-accent-foreground: #1e2d3d;
+  --sidebar-border: #e4eaef;
+  --sidebar-ring: #0d6f68;
+
+  /* Font — Avenir Next stack */
+  --font-geist-sans: "Avenir Next", "Avenir", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-geist-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, Monaco, monospace;
 }
 
 .dark {
@@ -133,9 +132,11 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-family: "Avenir Next", "Avenir", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    min-height: 100vh;
   }
   a {
-    @apply text-brand-yellow hover:text-brand-yellow/80 underline;
+    @apply text-brand-teal hover:text-brand-teal/80 underline;
   }
 }
 

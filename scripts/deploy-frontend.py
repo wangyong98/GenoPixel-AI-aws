@@ -124,7 +124,7 @@ def parse_config_yaml(config_path: Path) -> Dict[str, str]:
     Returns:
         Dictionary with stack_name_base and pattern values
     """
-    config = {"stack_name_base": "", "pattern": "strands-single-agent"}
+    config = {"stack_name_base": "", "pattern": "strands-single-agent", "custom_domain": ""}
 
     if not config_path.exists():
         return config
@@ -140,6 +140,11 @@ def parse_config_yaml(config_path: Path) -> Dict[str, str]:
     match = re.search(r"pattern:\s*(\S+)", content)
     if match:
         config["pattern"] = match.group(1).split("#")[0].strip().strip("\"'")
+
+    # Extract optional custom_domain
+    match = re.search(r"^custom_domain:\s*(\S+)", content, re.MULTILINE)
+    if match:
+        config["custom_domain"] = match.group(1).split("#")[0].strip().strip("\"'")
 
     return config
 
@@ -342,6 +347,7 @@ def generate_aws_exports(
     region: str,
     pattern: str,
     frontend_dir: Path,
+    custom_domain: str = "",
 ) -> None:
     """
     Generate aws-exports.json configuration file.
@@ -365,11 +371,13 @@ def generate_aws_exports(
     if missing:
         raise ValueError(f"Missing required stack outputs: {', '.join(missing)}")
 
+    redirect_uri = f"https://{custom_domain}" if custom_domain else outputs["AmplifyUrl"]
+
     aws_exports = {
         "authority": f"https://cognito-idp.{region}.amazonaws.com/{outputs['CognitoUserPoolId']}",
         "client_id": outputs["CognitoClientId"],
-        "redirect_uri": outputs["AmplifyUrl"],
-        "post_logout_redirect_uri": outputs["AmplifyUrl"],
+        "redirect_uri": redirect_uri,
+        "post_logout_redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": "email openid profile",
         "automaticSilentRenew": True,
@@ -377,6 +385,7 @@ def generate_aws_exports(
         "awsRegion": region,
         "feedbackApiUrl": outputs["FeedbackApiUrl"],
         "agentPattern": pattern,
+        "catalogApiUrl": outputs.get("CatalogApiUrl", ""),
     }
 
     public_dir = frontend_dir / "public"
@@ -467,6 +476,29 @@ def main() -> int:
         log_error(str(e))
         return 1
 
+    # If CatalogApiUrl wasn't promoted to the main stack yet, look it up from nested stacks
+    if not outputs.get("CatalogApiUrl"):
+        try:
+            result = run_command(
+                [
+                    "aws", "cloudformation", "list-stacks",
+                    "--stack-status-filter", "CREATE_COMPLETE", "UPDATE_COMPLETE",
+                    "--output", "json",
+                ]
+            )
+            all_stacks = json.loads(result.stdout).get("StackSummaries", [])
+            backend_name = next(
+                (s["StackName"] for s in all_stacks if "backend" in s["StackName"].lower() and stack_name in s["StackName"]),
+                None,
+            )
+            if backend_name:
+                nested = get_stack_outputs(backend_name)
+                if nested.get("CatalogApiUrl"):
+                    outputs["CatalogApiUrl"] = nested["CatalogApiUrl"]
+                    log_info(f"CatalogApiUrl resolved from nested stack: {outputs['CatalogApiUrl']}")
+        except Exception:
+            pass  # Non-critical — catalogApiUrl will just be empty
+
     # Validate required outputs
     app_id = outputs.get("AmplifyAppId")
     deployment_bucket = outputs.get("StagingBucketName")
@@ -490,7 +522,7 @@ def main() -> int:
     # Generate aws-exports.json
     log_info("Generating aws-exports.json...")
     try:
-        generate_aws_exports(stack_name, outputs, region, pattern, frontend_dir)
+        generate_aws_exports(stack_name, outputs, region, pattern, frontend_dir, config.get("custom_domain", ""))
     except ValueError as e:
         log_error(str(e))
         return 1

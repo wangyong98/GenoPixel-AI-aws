@@ -1,5 +1,13 @@
-# Strands agent dependencies
+# Strands + AgentCore runtime
 strands-agents==1.32.0
 bedrock-agentcore==1.4.7
 mcp==1.26.0
 PyJWT[crypto]==2.12.1
+
+# Scientific Python stack — single-cell genomics
+anndata>=0.10.0
+scanpy>=1.10.0
+matplotlib>=3.8.0
+seaborn>=0.13.0
+pandas>=2.0.0
+numpy>=1.26.0

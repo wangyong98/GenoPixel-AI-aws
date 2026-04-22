@@ -1,5 +1,6 @@
 import * as cdk from "aws-cdk-lib"
 import * as amplify from "@aws-cdk/aws-amplify-alpha"
+import * as route53 from "aws-cdk-lib/aws-route53"
 import * as s3 from "aws-cdk-lib/aws-s3"
 import * as iam from "aws-cdk-lib/aws-iam"
 import { Construct } from "constructs"
@@ -86,13 +87,38 @@ export class AmplifyHostingStack extends cdk.NestedStack {
       appName: `${props.config.stack_name_base}-frontend`,
       description: `${props.config.stack_name_base} - React Frontend`,
       platform: amplify.Platform.WEB,
+      // SPA catch-all: serve index.html for any path that doesn't match a static file
+      customRules: [
+        {
+          source: "</^[^.]+$|\\.(?!(css|gif|ico|jpg|jpeg|js|png|txt|svg|woff|woff2|ttf|map|json)$)([^.]+$)/>",
+          target: "/index.html",
+          status: amplify.RedirectStatus.REWRITE,
+        },
+      ],
     })
 
     // Create main branch for the Amplify app
-    this.amplifyApp.addBranch("main", {
+    const mainBranch = this.amplifyApp.addBranch("main", {
       stage: "PRODUCTION",
       branchName: "main",
     })
+
+    // Custom domain: www.genopixel.com (apex redirects to www)
+    const hostedZone = route53.HostedZone.fromLookup(this, "GenopixelHostedZone", {
+      domainName: "genopixel.com",
+    })
+    const domain = this.amplifyApp.addDomain("genopixel.com", {
+      domainName: "genopixel.com",
+      subDomains: [
+        // www.genopixel.com → main branch
+        { branch: mainBranch, prefix: "www" },
+        // apex genopixel.com → redirect to www
+        { branch: mainBranch, prefix: "" },
+      ],
+      enableAutoSubdomain: false,
+    })
+    // Suppress unused variable warning — hostedZone lookup ensures Route 53 owns the zone
+    void hostedZone
 
     // The predictable domain format: https://main.{appId}.amplifyapp.com
     this.amplifyUrl = `https://main.${this.amplifyApp.appId}.amplifyapp.com`

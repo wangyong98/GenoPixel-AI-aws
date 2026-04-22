@@ -30,6 +30,30 @@ class GenoPixelRuntimeState:
         self._active_loaded_at: str | None = None
         self._active_backed: bool | None = None
         self._active_total_cells: int | None = None
+        # Pending selection: recorded from DynamoDB even before the h5ad is loaded.
+        self._pending_selection: dict[str, Any] | None = None
+
+    def set_pending_selection(
+        self,
+        *,
+        all_excel_row: int,
+        multiple_excel_row: int | None,
+        title: str,
+        primary_file: str,
+    ) -> None:
+        with self._lock:
+            self._pending_selection = {
+                "all_excel_row": all_excel_row,
+                "multiple_excel_row": multiple_excel_row,
+                "title": title,
+                "primary_file": primary_file,
+            }
+
+    def get_pending_selection(self) -> dict[str, Any] | None:
+        with self._lock:
+            if self._active_adata is not None:
+                return None  # already loaded, not pending
+            return self._pending_selection
 
     def load_active_dataset(
         self,
@@ -61,6 +85,7 @@ class GenoPixelRuntimeState:
                 self._active_backed = backed
                 self._active_loaded_at = _utc_now_iso()
                 self._active_total_cells = int(self._active_adata.n_obs)
+                self._pending_selection = None
 
             return self.get_active_dataset_payload_unlocked()
 

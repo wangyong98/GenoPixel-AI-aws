@@ -4,8 +4,19 @@ import { useState } from "react"
 import { Wrench, Loader2, CheckCircle2, ChevronRight, ChevronDown } from "lucide-react"
 import type { ToolRenderProps } from "@/hooks/useToolRenderer"
 
+function extractDataImageUri(text?: string): string | null {
+  if (!text) return null
+
+  const normalized = text.replace(/\\n/g, "\n").replace(/\\"/g, '"')
+  const match = normalized.match(/data:image\/[a-zA-Z0-9.+-]+;base64,[a-zA-Z0-9+/=\s]+/i)
+  if (!match) return null
+
+  return match[0].replace(/\s+/g, "")
+}
+
 export function ToolCallDisplay({ name, args, status, result }: ToolRenderProps) {
   const [expanded, setExpanded] = useState(false)
+  const figureSrc = extractDataImageUri(result)
 
   return (
     <div className="my-1 text-sm">
@@ -28,6 +39,17 @@ export function ToolCallDisplay({ name, args, status, result }: ToolRenderProps)
         )}
         {status === "complete" && <CheckCircle2 size={12} className="text-green-500 ml-auto" />}
       </button>
+
+      {status === "complete" && figureSrc && (
+        <div className="ml-6 mt-2">
+          <img
+            src={figureSrc}
+            alt={`${name} figure`}
+            className="max-w-full h-auto rounded-md border border-gray-200 bg-white"
+            loading="lazy"
+          />
+        </div>
+      )}
 
       {expanded && (
         <div className="ml-6 mt-1 border-l-2 border-gray-200 pl-3 space-y-2">

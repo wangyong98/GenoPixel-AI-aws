@@ -53,7 +53,12 @@ export function ChatInput({
     <div className={`p-4 w-full ${className}`}>
       <form
         onSubmit={handleSubmit}
-        className="flex space-x-2 w-full items-end bg-white rounded-lg shadow-lg border border-gray-200 p-3"
+        className="flex space-x-2 w-full items-end rounded-xl p-3"
+        style={{
+          background: "#ffffff",
+          border: "1px solid #dce4ea",
+          boxShadow: "0 2px 12px rgba(26, 53, 80, 0.07)",
+        }}
       >
         <Textarea
           ref={textareaRef}

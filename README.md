@@ -1,208 +1,188 @@
-# Agent‑Optimized Workflow
+# GenoPixel AI — AWS
 
-Containerized GenoPixel tooling with an optional web UI, orchestrated via Docker Compose. This repo includes:
-- A native FastAPI GenoPixel runtime for catalog browsing and plotting.
-- A docker-compose stack with Open WebUI and a Caddy reverse proxy.
+Single-cell genomics analysis assistant deployed on AWS Bedrock AgentCore. Users browse and select datasets through a React frontend, then chat with an AI agent that loads and analyses the selected h5ad file using Scanpy.
+
+## Architecture
+
+```text
+User browser
+  │
+  ├─ React frontend (AWS Amplify)
+  │     ├─ Datasets tab  →  Catalog API (Lambda + API Gateway)
+  │     └─ Chat tab      →  AgentCore Runtime (Docker container)
+  │
+AWS
+  ├─ Cognito              — user authentication
+  ├─ Amplify              — frontend hosting + custom domain
+  ├─ AgentCore Runtime    — agent container (Strands + Claude Haiku)
+  ├─ AgentCore Gateway    — MCP tool routing
+  ├─ AgentCore Memory     — short-term conversation history
+  ├─ Lambda               — catalog API handler
+  ├─ API Gateway          — catalog API endpoint
+  ├─ DynamoDB             — active dataset selection per user
+  ├─ EFS                  — h5ad file storage (mounted into agent container)
+  └─ S3                   — h5ad files (fallback) + metadata Excel
+```
 
 ## Repository Structure
-- docker-compose.yaml — Compose stack for web UI and tools
-- Docker/
-    - genopixel/
-    - Dockerfile — Builds `genopixel:latest` (GenoPixel runtime + Scanpy + catalog API stack)
-    - gp_catalog.py — Excel normalization and cached catalog loader
-    - gp_catalog_api.py — Unified FastAPI runtime for the dataset browser and plotting API
-    - gp_runtime_state.py — Shared in-memory active dataset state
-- web/genopixel-datasets/ — Static dataset browser UI served through Caddy
-- openwebui/actions/ — Open WebUI action sources for manual import
-- openwebui/functions/ — Open WebUI filter/action sources for runtime behavior
-- openwebui/skills/ — Repo-managed GenoPixel skill artifacts mirrored into Open WebUI
-- data/ — Persistent data mounted by services
-- docs/ — Documentation assets
-- .github/copilot-instructions.md — Maintainer and Copilot guidance
-- out/ — Output artifacts written by scripts
-- Caddyfile — Reverse proxy config that forwards port 80 to Open WebUI
+
+```text
+infra-cdk/                    — CDK infrastructure (deploy this)
+  config.yaml                 — deployment configuration
+  lib/
+    backend-stack.ts          — AgentCore, Lambda, DynamoDB, EFS, S3
+    amplify-hosting-stack.ts  — Amplify frontend hosting
+  lambdas/
+    genopixel-catalog/
+      index.py                — catalog API handler (reads metadata Excel from S3)
+
+patterns/
+  strands-genopixel-agent/
+    basic_agent.py            — agent entrypoint (Strands + BedrockAgentCoreApp)
+    tools/
+      gp_tools.py             — Scanpy plotting and dataset tools
+    skills/                   — system prompt skill fragments loaded at startup
+      genopixel-tool-usage/
+      genopixel-plot-formatting/
+      scanpy-single-cell-analysis/
+
+Docker/genopixel/             — shared Python modules copied into the agent container
+  gp_h5ad_loader.py
+  gp_models.py
+  gp_runtime_state.py
+  gp_plot_response_formatter.py
+
+frontend/                     — React chat + dataset browser UI
+data/                         — source metadata Excel (upload to S3 before deploying)
+  cellxgene_HCA_final_webUI.xlsx
+gateway/                      — AgentCore Gateway shared utilities
+scripts/                      — deployment helper scripts
+tests/                        — integration tests
+```
 
 ## Prerequisites
-- Docker Desktop (Compose v2) running on your machine
-- macOS/Linux/Windows supported
 
-## Quickstart
-Create a minimal `.env` at the repo root and bring up the UI. The dataset browser API starts alongside the existing tool servers.
+- AWS CLI configured for your account
+- Node.js 18+ and npm
+- AWS CDK CLI: `npm install -g aws-cdk`
+- Python 3.11+ (for scripts and tests)
+- Docker (for building the agent container image)
 
-```env
-# Open WebUI admin
-WEBUI_ADMIN_EMAIL=admin@example.com
-WEBUI_ADMIN_PASS=changeme
-WEBUI_ADMIN_NAME=Admin
-WEBUI_HOST=localhost
-WEBUI_BANNERS=[]
-CHAT_HEALTH_SERV_BASEURL=http://openwebui:8080/health
+## Deployment
 
-# GenoPixel tool server
-GENOPIXEL_TOOL_HOST=genopixel_tool_server
-GENOPIXEL_TOOL_PORT=18889
-GENOPIXEL_TOOL_API_KEY=local-dev-key
-GENOPIXEL_TOOL_HEALTH_SERV_BASEURL=http://genopixel_tool_server:18889/health
+All commands run from `infra-cdk/`.
 
-# GenoPixel runtime settings
-GENOPIXEL_METADATA_XLSX=/Volumes/cx10/Single_cell_data_0117_2026/Final_metadata/cellxgene_HCA_final_02182026.xlsx
-GENOPIXEL_H5AD_BASE_DIR=/Volumes/cx10/Single_cell_data_0117_2026/cellxgene_final
-GENOPIXEL_OUTPUT_DIR=/code/out/genopixel
-GENOPIXEL_DEFAULT_BACKED=false
-GENOPIXEL_TOOL_MEMORY_LIMIT=65536M
+### 1. Configure
+
+Edit `infra-cdk/config.yaml`:
+
+```yaml
+stack_name_base: genopixel
+admin_user_email: you@example.com
+custom_domain: www.yoursite.com   # omit to use raw Amplify URL
+
+backend:
+  pattern: strands-genopixel-agent
+  model_id: us.anthropic.claude-haiku-4-5-20251001-v1:0
+  deployment_type: docker
+  network_mode: VPC               # required for EFS access
+  vpc:
+    vpc_id: <your-vpc-id>
+    subnet_ids:
+      - <subnet-a>
+      - <subnet-b>
 ```
 
-Start services and open http://localhost when healthy:
+### 2. Install and bootstrap
 
 ```bash
-docker compose up -d caddy openwebui
+cd infra-cdk
+npm install
+npx cdk bootstrap   # first time only
 ```
 
-## Configure Environment
-Copy the snippet below into a `.env` file at the repo root and adjust values. Only the first block is required to bring up Open WebUI. Ensure `WEBUI_BANNERS` is valid JSON (use `[]`).
-
-```env
-# Open WebUI admin
-WEBUI_ADMIN_EMAIL=admin@example.com
-WEBUI_ADMIN_PASS=changeme
-WEBUI_ADMIN_NAME=Admin
-WEBUI_HOST=localhost
-WEBUI_BANNERS=[]
-
-# Optional: Open WebUI health URL used by healthcheck
-CHAT_HEALTH_SERV_BASEURL=http://openwebui:8080/health
-
-# GenoPixel runtime
-GENOPIXEL_TOOL_HOST=genopixel_tool_server
-GENOPIXEL_TOOL_PORT=18889
-GENOPIXEL_TOOL_API_KEY=local-dev-key
-GENOPIXEL_TOOL_HEALTH_SERV_BASEURL=http://genopixel_tool_server:18889/health
-
-# GenoPixel runtime settings
-GENOPIXEL_METADATA_XLSX=/Volumes/cx10/Single_cell_data_0117_2026/Final_metadata/cellxgene_HCA_final_02182026.xlsx
-GENOPIXEL_H5AD_BASE_DIR=/Volumes/cx10/Single_cell_data_0117_2026/cellxgene_final
-GENOPIXEL_OUTPUT_DIR=/code/out/genopixel
-GENOPIXEL_DEFAULT_BACKED=false
-GENOPIXEL_TOOL_MEMORY_LIMIT=65536M
-
-# Optional integrations (only if you wire up corresponding services)
-TOOLUNIVERSE_PORT=9999
-OPENAI_API_KEY=
-WEBUI_API_KEY=
-FILE_USER=
-FILE_PASS=
-DB_PATH=
-STORAGE_PATH=
-FILE_SERV_BASEURL=
-```
-
-## Launch with Docker Compose
-
-The compose stack defines four services:
-- caddy — Reverse proxy on port 80. Also serves static files from `out/` at `/assets/*` and the dataset browser at `/apps/genopixel-datasets/`.
-- openwebui — Chat UI (also mapped to host port 3000)
-- genopixel_tool_server — Unified FastAPI GenoPixel runtime that serves both the dataset catalog and plotting API
-
-Notes
-
-- Images for external services use pull policy `if_not_present`.
-- `GENOPIXEL_TOOL_MEMORY_LIMIT` controls the GenoPixel container limit. The default in this repo is `65536M`.
-
-Start the web UI (will also start tool servers due to dependencies):
+### 3. Deploy
 
 ```bash
-docker compose up -d caddy openwebui
+npx cdk deploy --all
 ```
 
-Access
-- Open WebUI via proxy: http://localhost
-- Direct port (bypass proxy): http://localhost:3000
+This creates three stacks in order: Cognito → Backend → Amplify.
 
-Stop the stack:
+### 4. Upload metadata Excel
 
 ```bash
-docker compose down
+aws s3 cp data/cellxgene_HCA_final_webUI.xlsx s3://<H5AD_S3_BUCKET>/metadata/metadata.xlsx
 ```
 
-## Enable the Tool Server (HTTP)
-Start all services:
+The S3 bucket name is output by the CDK deploy. The catalog Lambda reads the Excel from this fixed key on every request and re-parses when the ETag changes.
+
+### 5. Upload h5ad files
 
 ```bash
-docker compose up -d
+aws s3 cp <file>.h5ad s3://<H5AD_S3_BUCKET>/
+# or sync a directory
+aws s3 sync <local-h5ad-dir>/ s3://<H5AD_S3_BUCKET>/
 ```
 
-Health and tools
+Files are served to the agent via EFS (mounted at `/mnt/genopixel/h5ad` inside the container). S3 is the fallback if a file is not on EFS.
 
-- Health check uses `POST /health` with bearer auth and an empty JSON body `{}`.
-- OpenAPI spec is served at `/openapi.json`.
-- In Open WebUI, the tool connection appears as "genopixel-tool".
-- `genopixel-tool` exposes plotting and basic AnnData metadata inspection: `generate_scanpy_plot` and `print_adata_obs`.
+## Dataset Metadata Excel
 
-Static artifacts
-- Caddy serves the repository `out/` folder at `http://localhost/assets/…`. Tools save images under `out/boxplots/` and return public URLs like `http://localhost/assets/boxplots/<file>.png`.
-- Caddy serves the dataset browser at `http://localhost/apps/genopixel-datasets/`.
-- The browser reads catalog data from `http://localhost/api/genopixel-catalog/catalog`.
-- Runtime readiness is available at `http://localhost/api/genopixel-runtime/active-dataset`.
+The catalog is driven by `data/cellxgene_HCA_final_webUI.xlsx` with two sheets:
 
-Dataset browser
-- The catalog UI uses the `all` sheet as the parent dataset list and shows `multiple` sheet rows inside the dataset detail drawer.
-- Import [openwebui/actions/genopixel_dataset_browser.py](/Users/wangyong98/AI_test/ftowfic-agent-optimized-workflow-ff2a654b03e2/openwebui/actions/genopixel_dataset_browser.py) through Open WebUI Admin > Functions to add the `Browse Datasets` action.
-- After importing the action, use it from chat to open the browser inline, or open the direct route above for a full-page view.
+- **all** — one row per parent dataset. Required columns: `title`, `author`, `file` (h5ad filename), `tissue`, `disease`, `organism`, `project`, `journal`, `cell_counts`, `merged`, `year`, `doi`, `cellxgene_doi`
+- **multiple** — variant rows for merged datasets, linked to parents via `cellxgene_doi`. Columns: `publication`, `file`, `cell_counts`, `tissue`, `disease`, `organism`, `description`
 
-Runtime skills for GenoPixels
-- Repo-managed GenoPixel skills live under [openwebui/skills/genopixel-tool-usage](/Users/wangyong98/AI_test/ftowfic-agent-optimized-workflow-ff2a654b03e2/openwebui/skills/genopixel-tool-usage) and [openwebui/skills/genopixel-plot-formatting](/Users/wangyong98/AI_test/ftowfic-agent-optimized-workflow-ff2a654b03e2/openwebui/skills/genopixel-plot-formatting).
-- The runtime filter source lives at [openwebui/functions/genopixel_skill_injector.py](/Users/wangyong98/AI_test/ftowfic-agent-optimized-workflow-ff2a654b03e2/openwebui/functions/genopixel_skill_injector.py).
-- Sync the mirrored skill records, the runtime filter, and the GenoPixels model linkage into Open WebUI with:
+To update the catalog, upload a new Excel to S3 — no redeploy needed.
+
+## Agent Skills
+
+Skills are system prompt fragments in `patterns/strands-genopixel-agent/skills/`. They are loaded at agent startup and appended to the system prompt in this order:
+
+1. `genopixel-tool-usage` — tool selection rules and follow-up suggestion logic
+2. `genopixel-plot-formatting` — how to render plot responses
+3. `scanpy-single-cell-analysis` — biological interpretation hints
+
+Edit the `SKILL.md` files to change agent behaviour, then redeploy the container.
+
+## Updating
+
+### Agent code or skills
 
 ```bash
-python3 openwebui/skills/scripts/sync_skills_to_openwebui.py
-docker compose restart openwebui
+cd infra-cdk
+npx cdk deploy BackendStack
 ```
 
-- The sync script makes the mirrored skills publicly readable in Open WebUI, attaches the filter to the `GenoPixels` model, and clears the model-specific plotting system prompt so runtime behavior comes from the skill artifacts instead.
-
-Quick verification from host
+### Frontend only
 
 ```bash
-# Sample GenoPixel tool
-curl -X POST -H "Authorization: Bearer ${GENOPIXEL_TOOL_API_KEY}" -H "Content-Type: application/json" \
-  -d '{"plot_type":"umap","color_json":"[\"cell_type\"]","genes_json":"[]"}' \
-  http://localhost:${GENOPIXEL_TOOL_PORT}/generate_scanpy_plot | jq
-
-# Inspect observation columns from active dataset
-curl -X POST -H "Authorization: Bearer ${GENOPIXEL_TOOL_API_KEY}" -H "Content-Type: application/json" \
-  -d '{"command":"print(adata.obs)"}' \
-  http://localhost:${GENOPIXEL_TOOL_PORT}/print_adata_obs | jq
+python3 scripts/deploy-frontend.py
 ```
 
-## Known Gaps / Next Steps
-- If you plan to add `file_server` or `tool_universe`, define them in docker-compose.yaml and wire them into `openwebui.depends_on`.
+### Infrastructure only (no container rebuild)
+
+```bash
+npx cdk deploy --all --no-rollback
+```
+
+## Useful CDK Commands
+
+```bash
+npx cdk diff          # preview changes before deploying
+npx cdk synth         # emit CloudFormation templates
+npx cdk destroy --all # tear down all resources
+```
 
 ## Troubleshooting
-- Open WebUI banners JSON error: If logs show a JSONDecodeError for `WEBUI_BANNERS`, set it to a valid JSON array in `.env` (e.g., `WEBUI_BANNERS=[]`) and restart `openwebui`.
 
-- Tool server unhealthy:
-  - Ensure `.env` has `GENOPIXEL_TOOL_API_KEY` set and compose healthcheck uses an authorized POST with an empty JSON body `{}`.
-  - Quick local checks:
-    ```bash
-    # Health (authorized POST with empty JSON)
-    curl -X POST -H "Authorization: Bearer ${GENOPIXEL_TOOL_API_KEY}" -H "Content-Type: application/json" \
-      -d '{}' http://localhost:${GENOPIXEL_TOOL_PORT}/health | head -c 200
+**Catalog returns 503**: the metadata Excel has not been uploaded to S3 yet, or `H5AD_S3_BUCKET` env var is not set on the Lambda.
 
-    # If 401 Unauthorized → API key missing/mismatch
-    # If 422 Unprocessable Content → missing JSON body; add -H Content-Type and -d '{}'
-    # If 405 Method Not Allowed → wrong HTTP method; use POST
-    ```
+**Agent says "no active dataset"**: the user has not clicked "Analyze this data" on a dataset in the Datasets tab, or the DynamoDB selection has expired (24-hour TTL).
 
-- Open WebUI slow to become healthy: First start may run DB migrations. Tail logs and wait:
-  ```bash
-  docker compose logs --no-color --tail=100 openwebui
-  ```
+**h5ad file not found**: the filename in the Excel `file` column does not match any file on EFS or in S3. Upload the file and verify the name matches exactly.
 
-- Port conflicts (80/81/443): If those are busy on your host, edit the host port mappings under `proxymanager.ports` or stop the conflicting service, then restart compose.
+**Cold start slow**: the agent container imports Scanpy and related scientific libraries on startup (~20s). The container stays warm between requests; subsequent invocations are fast.
 
-- Rebuild after dependency changes: If you change GenoPixel server code, rebuild and restart:
-  ```bash
-  docker compose build genopixel_tool_server
-  docker compose up -d
-  ```
+**CloudFormation deployment errors**: check the Events tab for the failing stack in the AWS Console.

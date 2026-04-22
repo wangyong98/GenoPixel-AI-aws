@@ -60,12 +60,11 @@ Edit `config.yaml` to customize your deployment:
 ```yaml
 stack_name_base: "fullstack-agentcore-solution-template"
 
-frontend:
-  domain_name: null  # Optional: Set to your custom domain
-  certificate_arn: null  # Optional: Set to your ACM certificate ARN
-
 backend:
   pattern: "strands-single-agent"  # Available patterns: strands-single-agent
+  deployment_type: "docker"
+  network_mode: "PUBLIC"
+  model_id: "us.anthropic.claude-haiku-4-5-20251001-v1:0"  # Optional; exposed to runtime as BEDROCK_MODEL_ID
 ```
 
 ## Project Structure

@@ -28,8 +28,18 @@ export class FastMainStack extends cdk.Stack {
 
     this.cognitoStack = new CognitoStack(this, `${id}-cognito`, {
       config: props.config,
-      callbackUrls: ["http://localhost:3000", this.amplifyHostingStack.amplifyUrl],
+      callbackUrls: [
+        "http://localhost:3000",
+        this.amplifyHostingStack.amplifyUrl,
+        "https://www.genopixel.com",
+        "https://genopixel.com",
+      ],
     })
+
+    // Prefer the custom domain for CORS and redirect_uri; fall back to the Amplify URL.
+    const primaryFrontendUrl = props.config.custom_domain
+      ? `https://${props.config.custom_domain}`
+      : this.amplifyHostingStack.amplifyUrl
 
     // Step 2: Create backend stack with the predictable Amplify URL and Cognito details
     this.backendStack = new BackendStack(this, `${id}-backend`, {
@@ -37,7 +47,7 @@ export class FastMainStack extends cdk.Stack {
       userPoolId: this.cognitoStack.userPoolId,
       userPoolClientId: this.cognitoStack.userPoolClientId,
       userPoolDomain: this.cognitoStack.userPoolDomain,
-      frontendUrl: this.amplifyHostingStack.amplifyUrl,
+      frontendUrl: primaryFrontendUrl,
     })
 
     // Outputs
@@ -82,6 +92,14 @@ export class FastMainStack extends cdk.Stack {
       description: "Feedback API Gateway URL",
       exportName: `${props.config.stack_name_base}-FeedbackApiUrl`,
     })
+
+    if (this.backendStack.catalogApiUrl) {
+      new cdk.CfnOutput(this, "CatalogApiUrl", {
+        value: this.backendStack.catalogApiUrl,
+        description: "GenoPixel Catalog API URL",
+        exportName: `${props.config.stack_name_base}-CatalogApiUrl`,
+      })
+    }
 
     new cdk.CfnOutput(this, "AmplifyConsoleUrl", {
       value: `https://console.aws.amazon.com/amplify/apps/${this.amplifyHostingStack.amplifyApp.appId}`,

@@ -3,9 +3,14 @@ stack_name_base: genopixel
 # Auto-creates admin user and emails temporary credentials on first deploy.
 admin_user_email: wangyong98@hotmail.com
 
+# Custom domain for redirect_uri and CORS (omit to use the raw Amplify URL).
+custom_domain: www.genopixel.com
+
 backend:
   # strands-* prefix → Strands parser in the React frontend
-  pattern: strands-single-agent # will be renamed to strands-genopixel-agent in Phase 4
+  pattern: strands-genopixel-agent
+  # Runtime model ID (exposed to agent as BEDROCK_MODEL_ID)
+  model_id: us.anthropic.claude-haiku-4-5-20251001-v1:0
   deployment_type: docker        # required: native C libs (HDF5, OpenBLAS) need a container
   network_mode: VPC              # required: AgentCore Runtime must reach EFS
 

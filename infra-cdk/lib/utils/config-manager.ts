@@ -29,11 +29,15 @@ export interface VpcConfig {
 export interface AppConfig {
   stack_name_base: string
   admin_user_email?: string | null
+  /** Optional custom domain (e.g. "www.genopixel.com"). Used for redirect_uri and CORS when set. */
+  custom_domain?: string
   backend: {
     pattern: string
     deployment_type: DeploymentType
     /** Network mode for the AgentCore Runtime. Defaults to "PUBLIC". */
     network_mode: NetworkMode
+    /** Optional Bedrock model ID exposed to the runtime as BEDROCK_MODEL_ID. */
+    model_id?: string
     /** VPC configuration. Required when network_mode is "VPC". */
     vpc?: VpcConfig
   }
@@ -91,6 +95,7 @@ export class ConfigManager {
       if (networkMode !== "PUBLIC" && networkMode !== "VPC") {
         throw new Error(`Invalid network_mode '${networkMode}' in ${configPath}. Must be 'PUBLIC' or 'VPC'.`)
       }
+      const modelId = parsedConfig.backend?.model_id?.trim() || undefined
 
       // Validate VPC configuration when network_mode is VPC.
       // The vpc block is OPTIONAL: if absent (or if vpc_id is empty), CDK creates
@@ -111,10 +116,12 @@ export class ConfigManager {
       return {
         stack_name_base: stackNameBase,
         admin_user_email: parsedConfig.admin_user_email || null,
+        custom_domain: parsedConfig.custom_domain || undefined,
         backend: {
           pattern: parsedConfig.backend?.pattern || "strands-single-agent",
           deployment_type: deploymentType,
           network_mode: networkMode,
+          model_id: modelId,
           vpc: vpcConfig,
         },
       }

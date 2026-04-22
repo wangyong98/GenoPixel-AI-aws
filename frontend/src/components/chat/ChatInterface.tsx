@@ -1,7 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
-import { ChatHeader } from "./ChatHeader"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { ChatInput } from "./ChatInput"
 import { ChatMessages } from "./ChatMessages"
 import { Message, MessageSegment, ToolCall } from "./types"
@@ -14,12 +13,41 @@ import { useAuth } from "react-oidc-context"
 import { useDefaultTool } from "@/hooks/useToolRenderer"
 import { ToolCallDisplay } from "./ToolCallDisplay"
 
-export default function ChatInterface() {
+const RECENT_CHATS_STORAGE_KEY = "genopixel_recent_chats_v1"
+const MAX_RECENT_CHATS = 20
+
+type StoredRecentChat = {
+  id: string
+  name: string
+  messages: Message[]
+  updatedAt: string
+}
+
+export type RecentChatSummary = {
+  id: string
+  name: string
+  updatedAt: string
+}
+
+export type ChatControls = {
+  onNewChat: () => void
+  canStartNewChat: boolean
+  recentChats: RecentChatSummary[]
+  currentSessionId: string
+  onSelectChat: (chatId: string) => void
+}
+
+interface ChatInterfaceProps {
+  onChatControlsChange?: (controls: ChatControls) => void
+}
+
+export default function ChatInterface({ onChatControlsChange }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [client, setClient] = useState<AgentCoreClient | null>(null)
-  const [sessionId, setSessionId] = useState(() => crypto.randomUUID())
+  const [sessionId, setSessionId] = useState<string>(() => crypto.randomUUID())
+  const [recentChats, setRecentChats] = useState<StoredRecentChat[]>([])
 
   const { isLoading, setIsLoading } = useGlobal()
   const auth = useAuth()
@@ -31,6 +59,47 @@ export default function ChatInterface() {
   useDefaultTool(({ name, args, status, result }) => (
     <ToolCallDisplay name={name} args={args} status={status} result={result} />
   ))
+
+  const sessionTitleFromMessages = useCallback((history: Message[]) => {
+    const firstUserText =
+      history.find(m => m.role === "user" && m.content.trim().length > 0)?.content?.trim() || "New chat"
+    return firstUserText.length > 50 ? `${firstUserText.slice(0, 50)}…` : firstUserText
+  }, [])
+
+  const persistRecentChats = useCallback((value: StoredRecentChat[]) => {
+    try {
+      window.localStorage.setItem(RECENT_CHATS_STORAGE_KEY, JSON.stringify(value))
+    } catch (err) {
+      console.error("Failed to persist recent chats:", err)
+    }
+  }, [])
+
+  const upsertRecentChat = useCallback((chatId: string, history: Message[]) => {
+    if (!history.length) return
+    const name = sessionTitleFromMessages(history)
+    const updatedAt = history[history.length - 1]?.timestamp || new Date().toISOString()
+
+    setRecentChats(prev => {
+      const next = [
+        { id: chatId, name, messages: history, updatedAt },
+        ...prev.filter(c => c.id !== chatId),
+      ]
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+        .slice(0, MAX_RECENT_CHATS)
+
+      persistRecentChats(next)
+      return next
+    })
+  }, [persistRecentChats, sessionTitleFromMessages])
+
+  const onSelectRecentChat = useCallback((chatId: string) => {
+    const target = recentChats.find(c => c.id === chatId)
+    if (!target) return
+    setError(null)
+    setInput("")
+    setSessionId(target.id)
+    setMessages(target.messages || [])
+  }, [recentChats])
 
   // Load agent configuration and create client on mount
   useEffect(() => {
@@ -61,6 +130,22 @@ export default function ChatInterface() {
     }
 
     loadConfig()
+  }, [])
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(RECENT_CHATS_STORAGE_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw) as StoredRecentChat[]
+      if (!Array.isArray(parsed)) return
+      const cleaned = parsed
+        .filter(c => c && typeof c.id === "string" && Array.isArray(c.messages))
+        .sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""))
+        .slice(0, MAX_RECENT_CHATS)
+      setRecentChats(cleaned)
+    } catch (err) {
+      console.error("Failed to load recent chats:", err)
+    }
   }, [])
 
   useEffect(() => {
@@ -247,12 +332,12 @@ export default function ChatInterface() {
 
   // Start a new chat by clearing messages and generating a fresh session ID.
   // A new UUID is required so the backend treats this as a distinct conversation context.
-  const startNewChat = () => {
+  const startNewChat = useCallback(() => {
     setMessages([])
     setInput("")
     setError(null)
     setSessionId(crypto.randomUUID())
-  }
+  }, [])
 
   // Check if this is the initial state (no messages)
   const isInitialState = messages.length === 0
@@ -260,17 +345,35 @@ export default function ChatInterface() {
   // Check if there are any assistant messages
   const hasAssistantMessages = messages.some(message => message.role === "assistant")
 
+  useEffect(() => {
+    if (!messages.length) return
+    upsertRecentChat(sessionId, messages)
+  }, [sessionId, messages, upsertRecentChat])
+
+  useEffect(() => {
+    onChatControlsChange?.({
+      onNewChat: startNewChat,
+      canStartNewChat: hasAssistantMessages,
+      recentChats: recentChats.map(c => ({ id: c.id, name: c.name, updatedAt: c.updatedAt })),
+      currentSessionId: sessionId,
+      onSelectChat: onSelectRecentChat,
+    })
+  }, [
+    onChatControlsChange,
+    startNewChat,
+    hasAssistantMessages,
+    recentChats,
+    sessionId,
+    onSelectRecentChat,
+  ])
+
   return (
-    <div className="flex flex-col h-screen w-full">
-      {/* Fixed header */}
-      <div className="flex-none">
-        <ChatHeader onNewChat={startNewChat} canStartNewChat={hasAssistantMessages} />
-        {error && (
-          <div className="bg-red-50 border-l-4 border-red-500 p-4 mx-4 mt-2">
-            <p className="text-sm text-red-700">{error}</p>
-          </div>
-        )}
-      </div>
+    <div className="flex flex-col h-full w-full">
+      {error && (
+        <div className="bg-red-50 border-l-4 border-red-500 p-4 mx-4 mt-2 flex-none">
+          <p className="text-sm text-red-700">{error}</p>
+        </div>
+      )}
 
       {/* Conditional layout based on whether there are messages */}
       {isInitialState ? (
@@ -281,8 +384,8 @@ export default function ChatInterface() {
 
           {/* Centered welcome message */}
           <div className="text-center mb-6">
-            <h2 className="text-2xl font-bold text-gray-800">Welcome to FAST Chat</h2>
-            <p className="text-gray-600 mt-2">Ask me anything to get started</p>
+            <h2 className="text-2xl font-bold text-gray-800">Welcome to GenoPixel Chat</h2>
+            <p className="text-gray-600 mt-2">Ask me "show me the data" to get started</p>
           </div>
 
           {/* Centered input */}

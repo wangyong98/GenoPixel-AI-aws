@@ -1,4 +1,4 @@
-# Strands Single Agent Pattern
+# Strands GenoPixel Agent Pattern
 
 This pattern uses the [Strands Agents](https://github.com/strands-agents/strands-agents) framework to build a single agent with Gateway tool access, Code Interpreter, and AgentCore Memory for conversation history.
 
@@ -17,7 +17,7 @@ User Request
     |
 BedrockAgentCoreApp (basic_agent.py)
     |
-Strands Agent (Sonnet model via BedrockModel)
+Strands Agent (BedrockModel)
     |
     +-- AgentCore Memory (conversation history)
     |     AgentCoreMemorySessionManager
@@ -32,11 +32,12 @@ Strands Agent (Sonnet model via BedrockModel)
 ## File Structure
 
 ```
-patterns/strands-single-agent/
+patterns/strands-genopixel-agent/
 ├── basic_agent.py                # Main entrypoint (BedrockAgentCoreApp)
-├── strands_code_interpreter.py   # Strands @tool wrapper for Code Interpreter
-├── tools/
-│   └── strands_execute_python.py # Strands-specific tool implementation
+├── tools/                        # GenoPixel and gateway tool integrations
+│   ├── gp_tools.py
+│   ├── code_interpreter.py
+│   └── gateway.py
 ├── requirements.txt              # Pinned dependencies
 └── Dockerfile                    # Container build (Python 3.13)
 ```
@@ -50,7 +51,23 @@ patterns/strands-single-agent/
 
 ## Model
 
-- **Agent**: `us.anthropic.claude-sonnet-4-5-20250929-v1:0` (Sonnet via Bedrock)
+- **Configured in**: `infra-cdk/config.yaml` → `backend.model_id`
+- **Runtime env var**: `BEDROCK_MODEL_ID`
+- **Current default/pin**: `us.anthropic.claude-haiku-4-5-20251001-v1:0`
+
+## Dataset Preload Safeguards
+
+To keep chat responsive when EFS is unavailable and h5ad files fall back to S3:
+
+- `ALLOW_S3_PRELOAD` (default: `false`)
+  - `false`: auto-preload on chat invocation only happens for EFS paths.
+  - `true`: allow auto-preload from S3 fallback paths.
+- `PRELOAD_MAX_BYTES` (default: `1000000000`)
+  - Skip auto-preload when file size exceeds this limit.
+- `S3_PRELOAD_BACKED` (default: `true`)
+  - When S3 auto-preload is enabled, load in AnnData backed mode.
+- `S3_FALLBACK_BACKED` (default: `true`)
+  - For explicit `load_dataset` calls on S3 fallback files, use backed mode.
 
 ## Streaming Events
 
@@ -87,12 +104,11 @@ This pattern uses **AgentCore Memory** for conversation persistence:
 cd infra-cdk
 # Set pattern in config.yaml:
 #   backend:
-#     pattern: strands-single-agent
-#     deployment_type: docker  # or zip
+#     pattern: strands-genopixel-agent
+#     model_id: us.anthropic.claude-haiku-4-5-20251001-v1:0
+#     deployment_type: docker
 cdk deploy
 ```
-
-Both Docker and ZIP deployment types are supported.
 
 ## Dependencies
 
