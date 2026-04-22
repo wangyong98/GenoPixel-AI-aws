@@ -114,8 +114,8 @@
 }
 
 .gp-datasets .hero h1 {
-  font-size: clamp(2rem, 4.1vw, 4rem);
-  line-height: 0.98;
+  font-size: 1.5rem;
+  line-height: 1.3;
   max-width: none;
 }
 
@@ -123,7 +123,7 @@
   margin: 0.75rem 0 0;
   max-width: none;
   color: var(--muted);
-  font-size: clamp(1.05rem, 1.45vw, 1.4rem);
+  font-size: 0.97rem;
   line-height: 1.45;
 }
 
