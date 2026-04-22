@@ -712,7 +712,7 @@ export default function DatasetsPage() {
             <header className="hero" style={{ textAlign: "center" }}>
               <div className="hero-copy">
                 <div className="hero-text">
-                  <h1 style={{ fontSize: "clamp(1.5rem, 2.6vw, 2.4rem)" }}>Dataset browser for GenoPixel catalog</h1>
+                  <h1 className="text-2xl font-bold" style={{ color: "#1a3550", letterSpacing: "-0.01em" }}>Dataset browser for GenoPixel catalog</h1>
                   <p>Search, facet, and inspect the GenoPixel catalog before analysis.</p>
                 </div>
               </div>
